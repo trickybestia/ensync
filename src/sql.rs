@@ -79,7 +79,7 @@ pub trait StatementEx: Sized {
 
     /// Like `Statement::bind`, but returns a self-like value to allow chaining
     /// onto other methods in this trait.
-    fn binding<T: Bindable>(self, i: usize, value: T) -> Self::Bound;
+    fn binding<T: BindableWithIndex>(self, i: usize, value: T) -> Self::Bound;
 
     /// Executes this statement (if possible), discarding all rows until `Done`
     /// is returned or an error is returned.
@@ -103,12 +103,12 @@ pub trait StatementEx: Sized {
 impl<'l> StatementEx for Statement<'l> {
     type Bound = Result<Statement<'l>>;
 
-    fn binding<T: Bindable>(
+    fn binding<T: BindableWithIndex>(
         mut self,
         i: usize,
         value: T,
     ) -> Result<Statement<'l>> {
-        self.bind(i, value).map(|_| self)
+        self.bind((i, value)).map(|_| self)
     }
 
     fn run(mut self) -> Result<()> {
@@ -131,7 +131,7 @@ impl<'l> StatementEx for Statement<'l> {
 impl<'l> StatementEx for Result<Statement<'l>> {
     type Bound = Self;
 
-    fn binding<T: Bindable>(self, i: usize, value: T) -> Self {
+    fn binding<T: BindableWithIndex>(self, i: usize, value: T) -> Self {
         self.and_then(|r| r.binding(i, value))
     }
 
@@ -178,25 +178,6 @@ impl AsNBytes for OsStr {
     }
 }
 
-pub struct SendConnection(pub sqlite::Connection);
-impl Deref for SendConnection {
-    type Target = sqlite::Connection;
-
-    fn deref(&self) -> &sqlite::Connection {
-        &self.0
-    }
-}
-impl DerefMut for SendConnection {
-    fn deref_mut(&mut self) -> &mut sqlite::Connection {
-        &mut self.0
-    }
-}
-
-// `sqlite::Connection` cannot make itself `Send` because the optional callback
-// it contains might not be `Send`. We do not use that feature, and SQLite
-// itself is prepared for cross-thread requests, so it is safe to be `Send`.
-unsafe impl Send for SendConnection {}
-
 /// Wrapper for `Connection` which runs the database in non-synchronous mode.
 ///
 /// The schema must create a table named `db_dirty` which contains a `dirty`
@@ -226,9 +207,7 @@ unsafe impl Send for SendConnection {}
 /// DELETE FROM `db_dirty`;
 /// ```
 ///
-/// Additionally, this type also has the same properties as `SendConnection`.
-pub struct VolatileConnection(pub sqlite::Connection);
-unsafe impl Send for VolatileConnection {}
+pub struct VolatileConnection(sqlite::ConnectionThreadSafe);
 
 impl Deref for VolatileConnection {
     type Target = sqlite::Connection;
@@ -261,8 +240,8 @@ impl VolatileConnection {
         fn open_with_schema(
             path: &Path,
             schema: &str,
-        ) -> sqlite::Result<sqlite::Connection> {
-            let cxn = sqlite::Connection::open(path)?;
+        ) -> sqlite::Result<sqlite::ConnectionThreadSafe> {
+            let cxn = sqlite::Connection::open_thread_safe(path)?;
             cxn.execute(schema)?;
             Ok(cxn)
         }
@@ -270,7 +249,7 @@ impl VolatileConnection {
         fn open_first_try(
             path: &Path,
             schema: &str,
-        ) -> sqlite::Result<sqlite::Connection> {
+        ) -> sqlite::Result<sqlite::ConnectionThreadSafe> {
             let cxn = open_with_schema(path, schema)?;
             if cxn.prepare("SELECT 1 FROM `db_dirty`").exists()? {
                 eprintln!(
@@ -333,5 +312,58 @@ impl Drop for VolatileConnection {
             .unwrap_or_else(|e| {
                 eprintln!("Failed to clean database up: {}", e);
             });
+    }
+}
+
+#[cfg(test)]
+mod connection_tests {
+    use super::*;
+    use std::sync::{Arc, Mutex};
+    #[test]
+    fn rollback_and_recover_dirty_database() {
+        const SCHEMA: &str = "CREATE TABLE IF NOT EXISTS db_dirty(dirty); CREATE TABLE IF NOT EXISTS entries(n);";
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.sqlite");
+        let db = Arc::new(Mutex::new(
+            VolatileConnection::new(&path, SCHEMA, "test").unwrap(),
+        ));
+        std::thread::scope(|group| {
+            for _ in 0..4 {
+                let db = db.clone();
+                group.spawn(move || {
+                    let db = db.lock().unwrap();
+                    tx(&db, || db.execute("INSERT INTO entries VALUES (1)"))
+                        .unwrap();
+                    assert!(
+                        tx(&db, || {
+                            db.execute("INSERT INTO entries VALUES (2)")?;
+                            db.execute("INSERT INTO missing VALUES (3)")
+                        })
+                        .is_err()
+                    );
+                });
+            }
+        });
+        drop(db);
+        // Reproduce the durable state of a valid but uncleanly closed DB.
+        sqlite::open(&path)
+            .unwrap()
+            .execute("INSERT INTO db_dirty VALUES (1)")
+            .unwrap();
+        let db = VolatileConnection::new(&path, SCHEMA, "test").unwrap();
+        assert_eq!(
+            Some((4, 4)),
+            db.prepare("SELECT count(*), sum(n) FROM entries")
+                .first(|s| Ok((s.read::<i64, _>(0)?, s.read::<i64, _>(1)?)))
+                .unwrap()
+        );
+        drop(db);
+        assert!(
+            !sqlite::open(path)
+                .unwrap()
+                .prepare("SELECT dirty FROM db_dirty")
+                .exists()
+                .unwrap()
+        );
     }
 }

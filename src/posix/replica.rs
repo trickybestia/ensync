@@ -1401,9 +1401,7 @@ impl Watch for PosixReplica {
 
 #[cfg(test)]
 mod test {
-    use libc;
     use std::collections::HashMap;
-    use std::ffi::CString;
     use std::fs;
     use std::io::{self, Read, Write};
     use std::os::unix;
@@ -1569,11 +1567,7 @@ mod test {
             .create(root.path().join("dir"))
             .unwrap();
         unix::fs::symlink("target", root.path().join("sym")).unwrap();
-        unsafe {
-            let path = CString::new(root.path().join("fifo").to_str().unwrap())
-                .unwrap();
-            assert_eq!(0, libc::mkfifo(path.as_ptr(), 0o000));
-        }
+        nix::unistd::mkfifo(&root.path().join("fifo"), nix::sys::stat::Mode::empty()).unwrap();
         fs::DirBuilder::new()
             .mode(0o700)
             .create(root.path().join(PRIVATE_DIR_NAME))

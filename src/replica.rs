@@ -332,8 +332,6 @@ impl WatchHandle {
     }
 
     /// Notify all waiters without changing state.
-    ///
-    /// This is safe to invoke from an asynchronous signal handler.
     pub fn notify(&self) {
         self.notify.send(&[0]).unwrap();
     }

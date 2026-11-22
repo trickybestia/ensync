@@ -93,11 +93,11 @@ impl FileEntry<'static> {
         Ok(FileEntry {
             id: stmt.read(0)?,
             parent: stmt.read(1)?,
-            name: stmt.read::<Vec<u8>>(2)?.into(),
+            name: stmt.read::<Vec<u8>, _>(2)?.into(),
             typ: stmt.read(3)?,
             mode: stmt.read(4)?,
             mtime: stmt.read(5)?,
-            content: stmt.read::<Vec<u8>>(6)?.into(),
+            content: stmt.read::<Vec<u8>, _>(6)?.into(),
         })
     }
 }

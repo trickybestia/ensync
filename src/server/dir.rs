@@ -95,7 +95,7 @@ use crate::server::crypt::*;
 use crate::server::dir_config::DirConfig;
 use crate::server::storage::*;
 use crate::server::transfer::ServerTransferOut;
-use crate::sql::{SendConnection, StatementEx};
+use crate::sql::StatementEx;
 
 /// The well-known directory id of the "directory" object which stores the key
 /// list.
@@ -232,7 +232,7 @@ pub struct Dir<S: Storage + ?Sized + 'static> {
     pub storage: Arc<S>,
 
     // Lock hierarchy: Lock may not be acquired while lock on `content` is held.
-    db: Arc<Mutex<SendConnection>>,
+    db: Arc<Mutex<sqlite::ConnectionThreadSafe>>,
     key: Arc<KeyChain>,
     tx_ctr: Arc<AtomicUsize>,
     block_size: usize,
@@ -283,7 +283,7 @@ impl<S: Storage + ?Sized + 'static> ReplicaDirectory for Dir<S> {
 impl<S: Storage + ?Sized + 'static> Dir<S> {
     /// Initialises the pseudo-root directory.
     pub fn root(
-        db: Arc<Mutex<SendConnection>>,
+        db: Arc<Mutex<sqlite::ConnectionThreadSafe>>,
         key: Arc<KeyChain>,
         storage: Arc<S>,
         block_size: usize,
@@ -838,7 +838,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                         WHERE `id` = ?1",
                 )
                 .binding(1, &self.id[..])
-                .first(|s| Ok((s.read::<i64>(0)?, s.read::<i64>(1)?)))?;
+                .first(|s| Ok((s.read::<i64, _>(0)?, s.read::<i64, _>(1)?)))?;
             v
         } {
             if (version, cipher_data.len() as u64)

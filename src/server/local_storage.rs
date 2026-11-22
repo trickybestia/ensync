@@ -34,7 +34,7 @@ use tiny_keccak::Keccak;
 use crate::defs::{DisplayHash, HashId, UNKNOWN_HASH};
 use crate::errors::*;
 use crate::server::storage::*;
-use crate::sql::{self, SendConnection, StatementEx};
+use crate::sql::{self, StatementEx};
 
 const NX: u32 = !0o7111;
 
@@ -89,7 +89,7 @@ pub struct LocalStorage {
     dirdir: PathBuf,
     objdir: PathBuf,
     dirty_dir_buf: Mutex<fs::File>,
-    db: Arc<Mutex<SendConnection>>,
+    db: Arc<Mutex<sqlite::ConnectionThreadSafe>>,
     txns: Mutex<HashMap<Tx, TxData>>,
     // Permissions to use for new files. This is copied from the permissions on
     // the top-level directory.
@@ -185,7 +185,7 @@ impl LocalStorage {
             .chain_err(|| {
                 format!("Error creating '{}'", sqlite_path.display())
             })?;
-        let cxn = sqlite::Connection::open(sqlite_path)?;
+        let cxn = sqlite::Connection::open_thread_safe(sqlite_path)?;
 
         cxn.execute(include_str!("storage-schema.sql"))?;
 
@@ -197,7 +197,7 @@ impl LocalStorage {
             objdir: objdir,
             dirdir: dirdir,
             dirty_dir_buf: Mutex::new(tmpfile),
-            db: Arc::new(Mutex::new(SendConnection(cxn))),
+            db: Arc::new(Mutex::new(cxn)),
             txns: Mutex::new(HashMap::default()),
             permissions: permissions,
             watch_list: None,
@@ -530,7 +530,7 @@ impl LocalStorage {
 }
 
 fn dir_exists_with_version(
-    db: &SendConnection,
+    db: &sqlite::ConnectionThreadSafe,
     id: &HashId,
     ver: &HashId,
     len: u32,

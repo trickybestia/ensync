@@ -21,7 +21,8 @@ flate2 = "1.0.20"
 fourleaf = "0.1.1"
 error-chain = "0.12.4"
 lazy_static = "1.4.0"
-libc = "0.2.158"
+filetime = "0.2"
+signal-hook = "0.3.18"
 notify = "4.0.15"
 num_cpus = "1.13.0"
 quick-error = "1.2.3"
@@ -31,7 +32,7 @@ rpassword = { version = "5.0.1", optional = true }
 # Non-1.0 status shouldn't be much of an issue since we're just using AES and
 # Scrypt.
 rust-crypto = "0.2.36"
-sqlite = "0.23.9"
+sqlite = "0.37"
 structopt = "0.3.21"
 tempfile = "3.2.0"
 tiny-keccak = "1.4.0"
@@ -41,7 +42,11 @@ toml = { version = "0.4.5", default-features = false }
 version = "2.33.3"
 default-features = false
 
+[lints.rust]
+unsafe_code = "forbid"
+
 [dev-dependencies]
+nix = { version = "0.30", features = ["fs"] }
 os_pipe = "0.6.0"
 proptest = "0.3.4"
 

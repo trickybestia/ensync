@@ -16,7 +16,7 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-use libc::isatty;
+use std::io::IsTerminal;
 use std::env;
 use std::fs;
 use std::io::{stdin, stdout, Write};
@@ -28,7 +28,7 @@ use crate::server::{rpc, LocalStorage};
 pub const SHELL_IDENTITY: &'static str = "I am ensync shell";
 
 pub fn run<P: AsRef<Path>>(path: P) -> Result<()> {
-    if 1 == unsafe { isatty(0) } || 1 == unsafe { isatty(1) } {
+    if stdin().is_terminal() || stdout().is_terminal() {
         return Err("The `server` subcommand is not for interactive use".into());
     }
 
@@ -42,7 +42,7 @@ pub fn run<P: AsRef<Path>>(path: P) -> Result<()> {
 }
 
 pub fn shell() -> Result<()> {
-    if 1 == unsafe { isatty(0) } || 1 == unsafe { isatty(1) } {
+    if stdin().is_terminal() || stdout().is_terminal() {
         return Err("Ensync shell is not for interactive use".into());
     }
 

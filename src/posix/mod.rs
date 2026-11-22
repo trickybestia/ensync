@@ -51,12 +51,10 @@
 //! This top-level module also has some miscellaneous functions for working
 //! with POSIX filesystems.
 
-use libc::{c_long, futimens, timespec, timeval, utimes};
-use std::ffi::CString;
+use std::fs::{File, FileTimes};
 use std::io;
-use std::os::unix::ffi::OsStringExt;
-use std::os::unix::io::AsRawFd;
 use std::path::Path;
+use std::time::{Duration, UNIX_EPOCH};
 
 use crate::defs::FileTime;
 
@@ -70,51 +68,45 @@ pub use self::replica::PosixReplica;
 
 /// Set the atime and mtime of the given file handle to the given time, in
 /// seconds.
-pub fn set_mtime(file: &impl AsRawFd, mtime: FileTime) -> io::Result<()> {
-    let access_modified = [
-        timespec {
-            tv_sec: mtime as c_long,
-            tv_nsec: 0,
-        },
-        timespec {
-            tv_sec: mtime as c_long,
-            tv_nsec: 0,
-        },
-    ];
-    // Using futimens because ulibc doesn't have futimes
-    let code = unsafe { futimens(file.as_raw_fd(), &access_modified[0]) };
-
-    if 0 == code {
-        Ok(())
+pub fn set_mtime(file: &File, mtime: FileTime) -> io::Result<()> {
+    let delta = Duration::from_secs(mtime.unsigned_abs());
+    let time = if mtime < 0 {
+        UNIX_EPOCH.checked_sub(delta)
     } else {
-        Err(io::Error::last_os_error())
+        UNIX_EPOCH.checked_add(delta)
     }
+    .ok_or_else(|| {
+        io::Error::new(io::ErrorKind::InvalidInput, "timestamp out of range")
+    })?;
+    file.set_times(FileTimes::new().set_accessed(time).set_modified(time))
 }
 
-/// Like `set_mtime`, but operates on a path instead.
-pub fn set_mtime_path<P: AsRef<Path>>(
-    path: P,
+/// Like `set_mtime`, but follows a path (including symbolic links).
+pub fn set_mtime_path(
+    path: impl AsRef<Path>,
     mtime: FileTime,
 ) -> io::Result<()> {
-    let access_modified = [
-        timeval {
-            tv_sec: mtime as c_long,
-            tv_usec: 0,
-        },
-        timeval {
-            tv_sec: mtime as c_long,
-            tv_usec: 0,
-        },
-    ];
-    let path =
-        CString::new(path.as_ref().to_owned().into_os_string().into_vec())
-            .expect("set_mtime_path path argument contains NUL");
-    // But apparently there's no utimens and everyone does have utimes.
-    let code = unsafe { utimes(path.as_ptr(), &access_modified[0]) };
+    let time = filetime::FileTime::from_unix_time(mtime, 0);
+    filetime::set_file_times(path, time, time)
+}
 
-    if 0 == code {
-        Ok(())
-    } else {
-        Err(io::Error::last_os_error())
+#[cfg(test)]
+mod timestamp_tests {
+    use super::*;
+    use std::os::unix::fs::{MetadataExt, symlink};
+
+    #[test]
+    fn pre_epoch_times_on_open_file_and_symlink_target() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("file");
+        let link = dir.path().join("link");
+        let file = File::create(&path).unwrap();
+        symlink(&path, &link).unwrap();
+        set_mtime(&file, -10).unwrap();
+        let m = file.metadata().unwrap();
+        assert_eq!((-10, -10), (m.atime(), m.mtime()));
+        set_mtime_path(&link, -20).unwrap();
+        let m = file.metadata().unwrap();
+        assert_eq!((-20, -20), (m.atime(), m.mtime()));
     }
 }

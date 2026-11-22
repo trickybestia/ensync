@@ -61,8 +61,8 @@ impl<'a> Iterator for CleanDirs<'a> {
 
 impl<'a> CleanDirs<'a> {
     fn read_row(&mut self) -> Result<(OsString, HashId)> {
-        let path = self.0.read::<Vec<u8>>(0)?.as_nstr()?.to_owned();
-        let hash = to_hashid(self.0.read::<Vec<u8>>(1)?)?;
+        let path = self.0.read::<Vec<u8>, _>(0)?.as_nstr()?.to_owned();
+        let hash = to_hashid(self.0.read::<Vec<u8>, _>(1)?)?;
         Ok((path, hash))
     }
 }
@@ -257,7 +257,7 @@ impl Dao {
                                       WHERE `path` = ?1",
             )
             .binding(1, path)
-            .first(|s| s.read::<i64>(0))?
+            .first(|s| s.read::<i64, _>(0))?
             .expect("Couldn't find the id of the row just inserted");
         for (ix, block) in blocks.iter().enumerate() {
             self.0
@@ -302,7 +302,7 @@ impl Dao {
             .binding(2, stat.ino as i64)
             .binding(3, stat.size as i64)
             .binding(4, stat.mtime as i64)
-            .first(|s| Ok((s.read::<i64>(0)?, s.read::<Vec<u8>>(1)?)))?
+            .first(|s| Ok((s.read::<i64, _>(0)?, s.read::<Vec<u8>, _>(1)?)))?
         {
             self.0
                 .prepare(
@@ -364,7 +364,7 @@ impl Dao {
                                            LIMIT 1",
             )
             .binding(1, &hash[..])
-            .first(|s| s.read::<Vec<u8>>(0))?;
+            .first(|s| s.read::<Vec<u8>, _>(0))?;
 
         if let Some(pv) = pathvec {
             Ok(Some(pv.as_nstr()?.to_owned()))
@@ -400,9 +400,9 @@ impl Dao {
             .binding(1, &hash[..])
             .first(|s| {
                 Ok((
-                    s.read::<Vec<u8>>(0)?,
-                    s.read::<i64>(1)?,
-                    s.read::<i64>(2)?,
+                    s.read::<Vec<u8>, _>(0)?,
+                    s.read::<i64, _>(1)?,
+                    s.read::<i64, _>(2)?,
                 ))
             })?;
 

@@ -30,7 +30,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 use std::time::Duration;
 
-use libc::isatty;
+use std::io::IsTerminal;
 
 use crate::ancestor::*;
 use crate::cli::config::Config;
@@ -782,13 +782,13 @@ pub fn run(
     let colour = match colour {
         "never" => false,
         "always" => true,
-        "auto" => 1 == unsafe { isatty(2) },
+        "auto" => stderr().is_terminal(),
         _ => false,
     };
     let spin = match spin {
         "never" => false,
         "always" => true,
-        "auto" => 1 == unsafe { isatty(2) },
+        "auto" => stderr().is_terminal(),
         _ => false,
     };
     let prepare_type = match prepare_type {
@@ -884,8 +884,6 @@ pub fn run(
         },
     };
 
-    interrupt::install_signal_handler();
-
     let rules = match override_mode {
         None => config.sync_rules.clone(),
         Some(overide) => {
@@ -924,7 +922,7 @@ pub fn run(
             server_replica
                 .watch(Arc::downgrade(&watch_handle), debounce)
                 .chain_err(|| "Error setting watch on server replica")?;
-            interrupt::notify_on_signal(watch_handle.clone());
+            interrupt::notify_on_signal(&watch_handle);
         }
 
         let context = Arc::new(reconcile::Context {

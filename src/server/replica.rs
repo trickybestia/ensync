@@ -34,7 +34,7 @@ use crate::block_xfer::*;
 use crate::defs::*;
 use crate::errors::*;
 use crate::replica::*;
-use crate::sql::{SendConnection, StatementEx};
+use crate::sql::StatementEx;
 
 impl<S: Storage + ?Sized + 'static> ReplicaDirectory for Arc<Dir<S>> {
     fn full_path(&self) -> &OsStr {
@@ -48,7 +48,7 @@ struct WatcherStatus {
 }
 
 pub struct ServerReplica<S: Storage + ?Sized + 'static> {
-    db: Arc<Mutex<SendConnection>>,
+    db: Arc<Mutex<sqlite::ConnectionThreadSafe>>,
     key: Arc<KeyChain>,
     pseudo_root: Arc<Dir<S>>,
     root_name: OsString,
@@ -78,9 +78,9 @@ impl<S: Storage + ?Sized + 'static> ServerReplica<S> {
         block_size: usize,
         compression: flate2::Compression,
     ) -> Result<Self> {
-        let db = sqlite::Connection::open(path)?;
+        let db = sqlite::Connection::open_thread_safe(path)?;
         db.execute(include_str!("client-schema.sql"))?;
-        let db = Arc::new(Mutex::new(SendConnection(db)));
+        let db = Arc::new(Mutex::new(db));
 
         let pseudo_root = Arc::new(Dir::root(
             db.clone(),
@@ -354,7 +354,7 @@ impl<S: Storage + ?Sized + 'static> Replica for ServerReplica<S> {
                 next_target = db.prepare("SELECT `parent` FROM `clean_dir` \
                                           WHERE `id` = ?1 AND `parent` IS NOT NULL")
                     .binding(1, &target[..])
-                    .first(|s| s.read::<Vec<u8>>(0))
+                    .first(|s| s.read::<Vec<u8>, _>(0))
                     .chain_err(|| "Error finding parent of dirty \
                                    server directory")?;
 

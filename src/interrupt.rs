@@ -16,77 +16,50 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-use libc;
-use std::ptr;
-use std::sync::atomic::Ordering::{Relaxed, SeqCst};
-use std::sync::atomic::{AtomicBool, AtomicPtr};
-use std::sync::Arc;
+use std::io::{self, Write};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, LazyLock, Mutex, Weak};
+use std::{sync::mpsc, thread};
 
 use crate::replica::WatchHandle;
+use signal_hook::{
+    consts::{SIGINT, SIGTERM},
+    flag,
+    iterator::Signals,
+};
 
-static INTERRUPTED: AtomicBool = AtomicBool::new(false);
-static NOTIFY_WATCH: AtomicPtr<WatchHandle> = AtomicPtr::new(ptr::null_mut());
+static INTERRUPTED: LazyLock<Arc<AtomicBool>> = LazyLock::new(Default::default);
+static WATCH: Mutex<Weak<WatchHandle>> = Mutex::new(Weak::new());
 
 pub fn is_interrupted() -> bool {
-    INTERRUPTED.load(Relaxed)
+    INTERRUPTED.load(Ordering::SeqCst)
 }
 
-unsafe extern "C" fn handle_sigint(_: libc::c_int) { unsafe {
-    let message = b"\nSync interrupted, stopping gracefully.\n\
-                    Press ^C again to terminate immediately.\n";
-    libc::write(
-        2,
-        message.as_ptr() as *const libc::c_void,
-        message.len() as libc::size_t,
-    );
-    INTERRUPTED.store(true, Relaxed);
-    libc::signal(libc::SIGTERM, libc::SIG_DFL);
-    libc::signal(libc::SIGINT, libc::SIG_DFL);
-
-    let watch: *const WatchHandle = NOTIFY_WATCH.load(SeqCst);
-    if !watch.is_null() {
-        (*watch).notify();
+/// Install once, before entering the client's reconnect loop.
+pub fn install_signal_handler() -> io::Result<mpsc::Receiver<()>> {
+    for signal in [SIGINT, SIGTERM] {
+        // The conditional action must run before setting the flag. The next
+        // signal can then terminate even if the worker thread is blocked.
+        flag::register_conditional_default(signal, INTERRUPTED.clone())?;
+        flag::register(signal, INTERRUPTED.clone())?;
     }
-}}
-
-pub fn install_signal_handler() {
-    unsafe {
-        libc::signal(
-            libc::SIGTERM,
-            handle_sigint as unsafe extern "C" fn(libc::c_int)
-                as libc::sighandler_t,
-        );
-        libc::signal(
-            libc::SIGINT,
-            handle_sigint as unsafe extern "C" fn(libc::c_int)
-                as libc::sighandler_t,
-        );
-    }
+    let mut signals = Signals::new([SIGINT, SIGTERM])?;
+    let (stop, interrupted) = mpsc::channel();
+    thread::Builder::new().name("interrupt".into()).spawn(move || {
+        for _ in signals.forever() {
+            let _ = stop.send(());
+            let watch = WATCH.lock().unwrap().upgrade();
+            let _ = writeln!(io::stderr(), "\nSync interrupted, stopping gracefully.\nPress ^C again to terminate immediately.");
+            if let Some(watch) = watch { watch.notify(); }
+        }
+    })?;
+    Ok(interrupted)
 }
 
-pub fn notify_on_signal(watch: Arc<WatchHandle>) {
-    let ptr = Arc::into_raw(watch);
-
-    assert!(
-        Ok(ptr::null_mut())
-            == NOTIFY_WATCH.compare_exchange(
-                ptr::null_mut(),
-                ptr as *mut WatchHandle,
-                SeqCst,
-                SeqCst
-            )
-    );
+pub fn notify_on_signal(watch: &Arc<WatchHandle>) {
+    *WATCH.lock().unwrap() = Arc::downgrade(watch);
 }
 
 pub fn clear_notify() {
-    // Unset the global pointer, *then* check whether an interrupt has
-    // happened.
-    let ptr = NOTIFY_WATCH.swap(ptr::null_mut(), SeqCst);
-    let interrupted = INTERRUPTED.load(SeqCst);
-    // If an interrupt has occurred, leak the `WatchHandle` since the interrupt
-    // handler could be trying to use it from another thread. The leak is fine
-    // since the program will exit soon anyway.
-    if !interrupted && !ptr.is_null() {
-        drop(unsafe { Arc::from_raw(ptr as *const WatchHandle) })
-    }
+    *WATCH.lock().unwrap() = Weak::new();
 }

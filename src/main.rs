@@ -1125,6 +1125,7 @@ fn main_impl() -> Result<()> {
                 )
             }
 
+            let stop = interrupt::install_signal_handler()?;
             let mut key_chain = None;
 
             loop {
@@ -1133,7 +1134,7 @@ fn main_impl() -> Result<()> {
                 match do_run(&sc, &config, num_threads, &mut key_chain) {
                     Ok(()) => return Ok(()),
                     Err(e) => {
-                        if let Some(seconds) = sc.reconnect {
+                        if let Some(seconds) = sc.reconnect.filter(|_| !interrupt::is_interrupted()) {
                             interrupt::clear_notify();
 
                             let _ = writeln!(
@@ -1143,9 +1144,10 @@ fn main_impl() -> Result<()> {
                                 e,
                                 seconds
                             );
-                            ::std::thread::sleep(::std::time::Duration::new(
+                            let _ = stop.recv_timeout(::std::time::Duration::new(
                                 seconds, 0,
                             ));
+                            if interrupt::is_interrupted() { return Err(e); }
                             // Continue loop
                         } else {
                             return Err(e);

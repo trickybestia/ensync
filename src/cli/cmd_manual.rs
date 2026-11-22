@@ -351,7 +351,7 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
                         format!("Error transferring '{}'", sub_src.display())
                     })?;
 
-                    posix::set_mtime(&tmpfile, time).chain_err(|| {
+                    posix::set_mtime(tmpfile.as_file(), time).chain_err(|| {
                         format!(
                             "Failed to set mtime on '{}'",
                             sub_dst.display()
