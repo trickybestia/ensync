@@ -23,7 +23,7 @@ error-chain = "0.12.4"
 lazy_static = "1.4.0"
 filetime = "0.2"
 signal-hook = "0.3.18"
-notify = "4.0.15"
+notify = "9.0"
 num_cpus = "1.13.0"
 quick-error = "1.2.3"
 rand = "0.8.3"
@@ -47,7 +47,7 @@ unsafe_code = "forbid"
 
 [dev-dependencies]
 nix = { version = "0.30", features = ["fs"] }
-os_pipe = "0.6.0"
+os_pipe = "1.2.3"
 proptest = "0.3.4"
 
 [features]

@@ -34,10 +34,10 @@ use std::time::Duration;
 use notify::{self, Watcher};
 use tempfile::NamedTempFile;
 
-use crate::block_xfer::{blocks_to_stream, hash_block, stream_to_blocks};
 use crate::block_xfer::{
     BlockFetch, BlockList, ContentAddressableSource, StreamSource,
 };
+use crate::block_xfer::{blocks_to_stream, hash_block, stream_to_blocks};
 use crate::defs::*;
 use crate::errors::*;
 use crate::posix;
@@ -651,32 +651,34 @@ impl Replica for PosixReplica {
             // device doesn't matter here; just use 0
             let dir = DirHandle::root(path.into(), 0);
 
-            let error = match fs::read_dir(dir.full_path()) { Ok(mut diriter) => {
-                while let Some(Ok(entry)) = diriter.next() {
-                    let name = entry.file_name();
-                    if OsStr::new(".") == &name || OsStr::new("..") == &name {
-                        continue;
-                    }
+            let error = match fs::read_dir(dir.full_path()) {
+                Ok(mut diriter) => {
+                    while let Some(Ok(entry)) = diriter.next() {
+                        let name = entry.file_name();
+                        if OsStr::new(".") == &name || OsStr::new("..") == &name
+                        {
+                            continue;
+                        }
 
-                    let md = entry.metadata().chain_err(|| {
-                        format!(
-                            "Error reading metadata for '{}'",
-                            entry.path().display()
-                        )
-                    })?;
-                    let fd = metadata_to_fd(
-                        &entry.path(),
-                        &md,
-                        &*dao,
-                        false,
-                        &*self.config,
-                    )?;
-                    dir.toggle_file(File(&name, &fd));
+                        let md = entry.metadata().chain_err(|| {
+                            format!(
+                                "Error reading metadata for '{}'",
+                                entry.path().display()
+                            )
+                        })?;
+                        let fd = metadata_to_fd(
+                            &entry.path(),
+                            &md,
+                            &*dao,
+                            false,
+                            &*self.config,
+                        )?;
+                        dir.toggle_file(File(&name, &fd));
+                    }
+                    false
                 }
-                false
-            } _ => {
-                true
-            }};
+                _ => true,
+            };
 
             if error || expected_hash != dir.hash() {
                 dao.set_dir_dirty(&dir.full_path_with_trailing_slash())?;
@@ -782,7 +784,7 @@ impl PosixReplica {
             match create(&path) {
                 Ok(file) => return Ok((file, path)),
                 Err(ref err) if io::ErrorKind::AlreadyExists == err.kind() => {
-                    continue
+                    continue;
                 }
                 Err(err) => return Err(err),
             }
@@ -1311,14 +1313,14 @@ impl Watch for PosixReplica {
     fn watch(
         &mut self,
         watch: Weak<WatchHandle>,
-        debounce: Duration,
+        _debounce: Duration,
     ) -> Result<()> {
         if self.watcher.is_some() {
             return Err(ErrorKind::AlreadyWatching.into());
         }
 
         let (tx, rx) = mpsc::channel();
-        let mut notifier = notify::watcher(tx, debounce)
+        let mut notifier = notify::recommended_watcher(tx)
             .chain_err(|| "Error allocating filesystem notifier")?;
         notifier
             .watch(&self.config.root, notify::RecursiveMode::Recursive)
@@ -1338,13 +1340,7 @@ impl Watch for PosixReplica {
 
         thread::spawn(move || {
             while let Ok(event) = rx.recv() {
-                use notify::DebouncedEvent::*;
-
-                let watch = match watch.upgrade() { Some(w) => {
-                    w
-                } _ => {
-                    return;
-                }};
+                let Some(watch) = watch.upgrade() else { return };
 
                 fn touch(
                     watcher: &Mutex<WatcherStatus>,
@@ -1366,30 +1362,28 @@ impl Watch for PosixReplica {
                 }
 
                 match event {
-                    NoticeWrite(_) | NoticeRemove(_) => {}
-                    Create(path) | Write(path) | Chmod(path) | Remove(path) => {
-                        if touch(&watcher, path) {
+                    Ok(event) => {
+                        // The watcher reports individual paths; debounce is handled by
+                        // the sync loop. A rename can contain both old and new paths.
+                        if event.need_rescan() {
+                            watch.set_context_lost();
+                        } else if event
+                            .paths
+                            .into_iter()
+                            .fold(false, |dirty, path| {
+                                touch(&watcher, path) || dirty
+                            })
+                        {
                             watch.set_dirty();
                         }
                     }
-                    Rename(from, to) => {
-                        if touch(&watcher, from) || touch(&watcher, to) {
-                            watch.set_dirty();
-                        }
-                    }
-                    Rescan => watch.set_context_lost(),
-                    Error(err, path) => {
-                        let path = match path.as_ref() {
-                            Some(path) => path,
-                            None => Path::new("<unknown>"),
-                        };
-
+                    Err(err) => {
                         let _ = writeln!(
                             io::stderr(),
-                            "Error monitoring '{}' for changes: {}",
-                            path.display(),
+                            "Error monitoring files for changes: {}",
                             err
                         );
+                        watch.set_context_lost();
                     }
                 }
             }
@@ -1567,7 +1561,11 @@ mod test {
             .create(root.path().join("dir"))
             .unwrap();
         unix::fs::symlink("target", root.path().join("sym")).unwrap();
-        nix::unistd::mkfifo(&root.path().join("fifo"), nix::sys::stat::Mode::empty()).unwrap();
+        nix::unistd::mkfifo(
+            &root.path().join("fifo"),
+            nix::sys::stat::Mode::empty(),
+        )
+        .unwrap();
         fs::DirBuilder::new()
             .mode(0o700)
             .create(root.path().join(PRIVATE_DIR_NAME))
@@ -1703,13 +1701,15 @@ mod test {
 
         spit(root.path().join("foo"), "exists");
 
-        assert!(replica
-            .create(
-                &mut dir,
-                File(&oss("foo"), &FileData::Directory(0o700)),
-                None
-            )
-            .is_err());
+        assert!(
+            replica
+                .create(
+                    &mut dir,
+                    File(&oss("foo"), &FileData::Directory(0o700)),
+                    None
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -2019,15 +2019,17 @@ mod test {
         // size and inode would not change.
         spit(root.path().join("foo"), "quux");
 
-        assert!(replica
-            .update(
-                &mut dir,
-                &oss("foo"),
-                &list[0].1,
-                &FileData::Directory(0o700),
-                None
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut dir,
+                    &oss("foo"),
+                    &list[0].1,
+                    &FileData::Directory(0o700),
+                    None
+                )
+                .is_err()
+        );
 
         assert_eq!("quux", &slurp(root.path().join("foo")));
     }
@@ -2104,9 +2106,11 @@ mod test {
         // to how fast this test executes.
         spit(root.path().join("foo"), "new-content");
 
-        assert!(replica
-            .remove(&mut dir, File(&oss("foo"), &list[0].1))
-            .is_err());
+        assert!(
+            replica
+                .remove(&mut dir, File(&oss("foo"), &list[0].1))
+                .is_err()
+        );
         assert_eq!("new-content", &slurp(root.path().join("foo")));
     }
 

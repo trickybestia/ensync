@@ -18,8 +18,9 @@
 
 use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
-use std::{sync::mpsc, thread};
+use std::thread;
 
 use crate::replica::WatchHandle;
 use signal_hook::{
@@ -49,8 +50,13 @@ pub fn install_signal_handler() -> io::Result<mpsc::Receiver<()>> {
         for _ in signals.forever() {
             let _ = stop.send(());
             let watch = WATCH.lock().unwrap().upgrade();
-            let _ = writeln!(io::stderr(), "\nSync interrupted, stopping gracefully.\nPress ^C again to terminate immediately.");
-            if let Some(watch) = watch { watch.notify(); }
+            let _ = writeln!(
+                io::stderr(),
+                "\nSync interrupted, stopping gracefully.\nPress ^C again to terminate immediately."
+            );
+            if let Some(watch) = watch {
+                watch.notify();
+            }
         }
     })?;
     Ok(interrupted)

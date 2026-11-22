@@ -62,7 +62,7 @@ use crate::errors::{Result, ResultExt};
 use crate::rules::SyncMode;
 
 fn main() {
-    use std::io::{stderr, Write};
+    use std::io::{Write, stderr};
     use std::process::exit;
 
     let result = main_impl();
@@ -1129,12 +1129,15 @@ fn main_impl() -> Result<()> {
             let mut key_chain = None;
 
             loop {
-                use std::io::{stderr, Write};
+                use std::io::{Write, stderr};
 
                 match do_run(&sc, &config, num_threads, &mut key_chain) {
                     Ok(()) => return Ok(()),
                     Err(e) => {
-                        if let Some(seconds) = sc.reconnect.filter(|_| !interrupt::is_interrupted()) {
+                        if let Some(seconds) = sc
+                            .reconnect
+                            .filter(|_| !interrupt::is_interrupted())
+                        {
                             interrupt::clear_notify();
 
                             let _ = writeln!(
@@ -1144,10 +1147,12 @@ fn main_impl() -> Result<()> {
                                 e,
                                 seconds
                             );
-                            let _ = stop.recv_timeout(::std::time::Duration::new(
-                                seconds, 0,
-                            ));
-                            if interrupt::is_interrupted() { return Err(e); }
+                            let _ = stop.recv_timeout(
+                                ::std::time::Duration::new(seconds, 0),
+                            );
+                            if interrupt::is_interrupted() {
+                                return Err(e);
+                            }
                             // Continue loop
                         } else {
                             return Err(e);
