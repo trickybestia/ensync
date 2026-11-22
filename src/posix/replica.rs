@@ -651,7 +651,7 @@ impl Replica for PosixReplica {
             // device doesn't matter here; just use 0
             let dir = DirHandle::root(path.into(), 0);
 
-            let error = if let Ok(mut diriter) = fs::read_dir(dir.full_path()) {
+            let error = match fs::read_dir(dir.full_path()) { Ok(mut diriter) => {
                 while let Some(Ok(entry)) = diriter.next() {
                     let name = entry.file_name();
                     if OsStr::new(".") == &name || OsStr::new("..") == &name {
@@ -674,9 +674,9 @@ impl Replica for PosixReplica {
                     dir.toggle_file(File(&name, &fd));
                 }
                 false
-            } else {
+            } _ => {
                 true
-            };
+            }};
 
             if error || expected_hash != dir.hash() {
                 dao.set_dir_dirty(&dir.full_path_with_trailing_slash())?;
@@ -1340,11 +1340,11 @@ impl Watch for PosixReplica {
             while let Ok(event) = rx.recv() {
                 use notify::DebouncedEvent::*;
 
-                let watch = if let Some(w) = watch.upgrade() {
+                let watch = match watch.upgrade() { Some(w) => {
                     w
-                } else {
+                } _ => {
                     return;
-                };
+                }};
 
                 fn touch(
                     watcher: &Mutex<WatcherStatus>,

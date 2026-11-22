@@ -443,7 +443,7 @@ mod test {
     }
 
     macro_rules! assert_err {
-        ($kind:pat, $x:expr) => {
+        ($kind:pat, $x:expr_2021) => {
             match $x {
                 Ok(_) => panic!("Call did not fail"),
                 Err(Error($kind, _)) => {}
@@ -455,7 +455,7 @@ mod test {
     }
 
     macro_rules! assert_list_one {
-        ($replica:expr, $root:expr, $name:expr, $fd:expr) => {
+        ($replica:expr_2021, $root:expr_2021, $name:expr_2021, $fd:expr_2021) => {
             let list = $replica.list(&mut $root).unwrap();
             assert_eq!(1, list.len());
             assert_eq!(oss($name), list[0].0);
@@ -470,7 +470,7 @@ mod test {
     }
 
     macro_rules! assert_list_none {
-        ($replica:expr, $root:expr) => {
+        ($replica:expr_2021, $root:expr_2021) => {
             assert!($replica.list(&mut $root).unwrap().is_empty());
             assert!($replica
                 .list(&mut $replica.root().unwrap())
@@ -1289,7 +1289,7 @@ mod test {
             .unwrap();
 
         macro_rules! test {
-            ($key_chain:expr, $xfer:expr, $which:ident) => {{
+            ($key_chain:expr_2021, $xfer:expr_2021, $which:ident) => {{
                 let mut actual_data: Vec<u8> = Vec::new();
                 assert!(block_xfer::blocks_to_stream(
                     &xfer.blocks,

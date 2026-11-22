@@ -80,11 +80,11 @@ impl DirHandle {
         match *self {
             DirHandle::Real(RealDir(v)) => Ok(v),
             DirHandle::Synth(ref sd) => {
-                if let Some(v) = sd.lock().unwrap().id {
+                match sd.lock().unwrap().id { Some(v) => {
                     Ok(v)
-                } else {
+                } _ => {
                     Err(ErrorKind::NotFound.into())
-                }
+                }}
             }
         }
     }

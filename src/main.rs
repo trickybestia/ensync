@@ -984,7 +984,7 @@ fn main_impl() -> Result<()> {
     }
 
     macro_rules! passphrase_or_config {
-        ($v:expr, $config:expr) => {
+        ($v:expr_2021, $config:expr_2021) => {
             if let Some(ref c) = $v {
                 c.to_owned()
             } else {

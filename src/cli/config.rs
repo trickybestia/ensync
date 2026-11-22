@@ -152,9 +152,9 @@ impl Config {
         })?;
 
         macro_rules! extract {
-            ($from:expr, $section:expr, $type_prefix:expr, $key:expr,
-             $type_suffix:expr, $default:expr, $convert:ident,
-             $convert_name:expr) => {
+            ($from:expr_2021, $section:expr_2021, $type_prefix:expr_2021, $key:expr_2021,
+             $type_suffix:expr_2021, $default:expr_2021, $convert:ident,
+             $convert_name:expr_2021) => {
                 $from
                     .get($key)
                     .or($default)
@@ -180,7 +180,7 @@ impl Config {
                     })
             };
 
-            ($from:expr, $section:expr, [$key:ident]) => {
+            ($from:expr_2021, $section:expr_2021, [$key:ident]) => {
                 extract!(
                     $from,
                     $section,
@@ -193,7 +193,7 @@ impl Config {
                 )
             };
 
-            ($from:expr, $section:expr, $key:ident, str = $default:expr) => {
+            ($from:expr_2021, $section:expr_2021, $key:ident, str = $default:expr_2021) => {
                 extract!(
                     $from,
                     $section,
@@ -206,11 +206,11 @@ impl Config {
                 )
             };
 
-            ($from:expr, $section:expr, $key:ident, str) => {
+            ($from:expr_2021, $section:expr_2021, $key:ident, str) => {
                 extract!($from, $section, $key, str = None)
             };
 
-            ($from:expr, $section:expr, $key:ident, i64 = $default:expr) => {
+            ($from:expr_2021, $section:expr_2021, $key:ident, i64 = $default:expr_2021) => {
                 extract!(
                     $from,
                     $section,
@@ -223,7 +223,7 @@ impl Config {
                 )
             };
 
-            ($from:expr, $section:expr, $key:ident, i64) => {
+            ($from:expr_2021, $section:expr_2021, $key:ident, i64) => {
                 extract!($from, $section, $key, i64 = None)
             };
         }

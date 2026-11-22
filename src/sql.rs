@@ -244,7 +244,7 @@ impl DerefMut for VolatileConnection {
 }
 
 macro_rules! eprintln {
-    ($($e:expr),*) => { { let _ = writeln!(io::stderr(), $($e),*); } }
+    ($($e:expr_2021),*) => { { let _ = writeln!(io::stderr(), $($e),*); } }
 }
 
 impl VolatileConnection {

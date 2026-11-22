@@ -25,7 +25,7 @@ use crate::errors::*;
 use crate::server::*;
 
 macro_rules! root_prompt {
-    ($root:expr) => {
+    ($root:expr_2021) => {
         || $root.read_passphrase("passphrase in `root` group", false)
     };
 }

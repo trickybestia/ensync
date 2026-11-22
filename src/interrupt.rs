@@ -31,7 +31,7 @@ pub fn is_interrupted() -> bool {
     INTERRUPTED.load(Relaxed)
 }
 
-unsafe extern "C" fn handle_sigint(_: libc::c_int) {
+unsafe extern "C" fn handle_sigint(_: libc::c_int) { unsafe {
     let message = b"\nSync interrupted, stopping gracefully.\n\
                     Press ^C again to terminate immediately.\n";
     libc::write(
@@ -47,7 +47,7 @@ unsafe extern "C" fn handle_sigint(_: libc::c_int) {
     if !watch.is_null() {
         (*watch).notify();
     }
-}
+}}
 
 pub fn install_signal_handler() {
     unsafe {

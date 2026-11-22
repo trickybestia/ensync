@@ -52,12 +52,12 @@ use crate::server::*;
 use crate::work_stack;
 
 macro_rules! perrln {
-    ($($arg:expr),+) => {
+    ($($arg:expr_2021),+) => {
         let _ = writeln!(stderr(), $($arg),+);
     }
 }
 macro_rules! perr {
-    ($($arg:expr),+) => {
+    ($($arg:expr_2021),+) => {
         let _ = write!(stderr(), $($arg),+);
     }
 }
@@ -138,12 +138,12 @@ impl LoggerImpl {
         let mut stderr_lock = stderr_handle.lock();
 
         macro_rules! perrln {
-            ($($arg:expr),+) => {
+            ($($arg:expr_2021),+) => {
                 let _ = writeln!(stderr_lock, $($arg),+);
             }
         }
         macro_rules! perr {
-            ($($arg:expr),+) => {
+            ($($arg:expr_2021),+) => {
                 let _ = write!(stderr_lock, $($arg),+);
             }
         }
@@ -210,7 +210,7 @@ impl LoggerImpl {
         let mut reprint_spin = false;
 
         macro_rules! say {
-            ($path:expr, $side:expr, $extra:tt $(, $arg:expr)*) => {{
+            ($path:expr_2021, $side:expr_2021, $extra:tt $(, $arg:expr_2021)*) => {{
                 let (start_colour, level_name) = match level {
                     FATAL => ("\x1B[1;31m", "FATAL"),
                     ERROR => ("\x1B[31m", "ERROR"),
@@ -611,7 +611,7 @@ impl LoggerImpl {
         }
 
         macro_rules! say {
-            ($item:expr, $path:expr) => {{
+            ($item:expr_2021, $path:expr_2021) => {{
                 let _ = writeln!(
                     stdout_lock,
                     "{:<11} {}",
@@ -1006,7 +1006,7 @@ fn run_sync<
     spin: bool,
 ) -> Result<()> {
     macro_rules! spawn {
-        (|$context:ident| $body:expr) => {{
+        (|$context:ident| $body:expr_2021) => {{
             let $context = $context.clone();
             thread::spawn(move || $body)
         }};

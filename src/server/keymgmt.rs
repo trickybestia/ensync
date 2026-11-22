@@ -620,7 +620,7 @@ mod test {
     }
 
     macro_rules! assert_err {
-        ($expected:pat, $actual:expr) => {
+        ($expected:pat, $actual:expr_2021) => {
             match $actual {
                 Ok(_) => panic!("Call succeeded unexpectedly"),
                 Err(Error($expected, _)) => {}

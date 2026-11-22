@@ -537,7 +537,7 @@ pub fn run_server_rpc<S: Storage, R: Read, W: Write + Send + 'static>(
         sout: &Arc<Mutex<W>>,
     ) -> RequestResponse {
         macro_rules! err {
-            ($e:expr) => {
+            ($e:expr_2021) => {
                 RequestResponse::SyncResponse(Response::Error(format!(
                     "{}",
                     $e
@@ -546,7 +546,7 @@ pub fn run_server_rpc<S: Storage, R: Read, W: Write + Send + 'static>(
         }
 
         macro_rules! none_or_fatal {
-            ($e:expr) => {
+            ($e:expr_2021) => {
                 match $e {
                     Ok(_) => RequestResponse::None,
                     Err(e) => RequestResponse::AsyncError(e),
@@ -719,7 +719,7 @@ pub struct RemoteStorage {
 }
 
 macro_rules! handle_response {
-    ($this:expr, $term:expr => { $($pat:pat => $res:expr,)* }) => {
+    ($this:expr_2021, $term:expr_2021 => { $($pat:pat => $res:expr_2021,)* }) => {
         match $term {
             Response::Error(e) =>
                 return Err(ErrorKind::ServerError(e).into()),
@@ -737,7 +737,7 @@ macro_rules! handle_response {
 }
 
 macro_rules! tryf {
-    ($this:expr, $e:expr) => {
+    ($this:expr_2021, $e:expr_2021) => {
         match $e {
             Ok(v) => v,
             Err(e) => {
