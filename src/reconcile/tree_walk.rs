@@ -18,9 +18,9 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::ffi::{OsStr, OsString};
+use std::sync::Arc;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::atomic::{AtomicBool, AtomicUsize};
-use std::sync::Arc;
 
 use super::compute::*;
 use super::context::*;
@@ -81,10 +81,10 @@ impl Drop for DirState {
 pub type DirStateRef = Arc<DirState>;
 
 impl<
-        CLI: Replica,
-        ANC: Replica + NullTransfer + Condemn,
-        SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
-    > Context<CLI, ANC, SRV>
+    CLI: Replica,
+    ANC: Replica + NullTransfer + Condemn,
+    SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
+> Context<CLI, ANC, SRV>
 {
     /// Processes a single file.
     ///
@@ -110,12 +110,11 @@ impl<
         anc.as_ref()).or(srv.as_ref()).expect(
         "Attempted to reconcile a file that doesn't exist in any replica.")));
 
-        if let Some(ref mut cli) = cli {
-            if !rules.trust_client_unix_mode() {
-                if let Some(other) = srv.as_ref().or(anc.as_ref()) {
-                    cli.transrich_unix_mode(other);
-                }
-            }
+        if let Some(ref mut cli) = cli
+            && !rules.trust_client_unix_mode()
+            && let Some(other) = srv.as_ref().or(anc.as_ref())
+        {
+            cli.transrich_unix_mode(other);
         }
 
         let (recon, conflict) = choose_reconciliation(
@@ -200,17 +199,19 @@ fn read_dir_contents<R: Replica, LOG: Logger>(
         }
     };
     for (name, value) in list {
-        rb.as_mut().map(|r| r.contains(File(&name, &value)));
+        if let Some(r) = rb.as_mut() {
+            r.contains(File(&name, &value))
+        }
         ret.insert(name, value);
     }
     Ok(ret)
 }
 
 impl<
-        CLI: Replica,
-        ANC: Replica + NullTransfer + Condemn,
-        SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
-    > Context<CLI, ANC, SRV>
+    CLI: Replica,
+    ANC: Replica + NullTransfer + Condemn,
+    SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
+> Context<CLI, ANC, SRV>
 {
     /// Processes a directory.
     ///
@@ -277,7 +278,7 @@ impl<
                 files: srv_files,
             },
             todo: Default::default(),
-            rules: rules,
+            rules,
         };
 
         let dirstate = Arc::new(DirState {
@@ -383,10 +384,10 @@ fn try_chdir<R: Replica, LOG: Logger>(
 }
 
 impl<
-        CLI: Replica,
-        ANC: Replica + NullTransfer + Condemn,
-        SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
-    > Context<CLI, ANC, SRV>
+    CLI: Replica,
+    ANC: Replica + NullTransfer + Condemn,
+    SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
+> Context<CLI, ANC, SRV>
 {
     /// Queues a task to recurse into the given directory.
     ///
@@ -484,11 +485,11 @@ impl<
                 file_rules.subdir(),
                 |dir, subdirstate| {
                     task(move |this| {
-                        if subdirstate.success.load(SeqCst) {
-                            if !on_success(this, dir, &subdirstate) {
-                                subdirstate
-                                    .fail("recurse_and_then on_success failed");
-                            }
+                        if subdirstate.success.load(SeqCst)
+                            && !on_success(this, dir, &subdirstate)
+                        {
+                            subdirstate
+                                .fail("recurse_and_then on_success failed");
                         }
                         this.finish_task_in_dir(&state, &subdirstate);
                     })
@@ -547,10 +548,10 @@ fn mark_clean<R: Replica, L: Logger>(
 }
 
 impl<
-        CLI: Replica,
-        ANC: Replica + NullTransfer + Condemn,
-        SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
-    > Context<CLI, ANC, SRV>
+    CLI: Replica,
+    ANC: Replica + NullTransfer + Condemn,
+    SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
+> Context<CLI, ANC, SRV>
 {
     /// Finishes a subtask of a directory.
     ///
@@ -574,6 +575,7 @@ impl<
     /// if necessary; on success, if all subtasks reported empty, the directories
     /// on all replicas are removed. Otherwise, on success, the directory is simply
     /// marked clean.
+    #[allow(clippy::too_many_arguments)]
     fn recursive_delete(
         &self,
         dir: &mut <Self as ContextExt>::Dir,
@@ -584,6 +586,7 @@ impl<
         side: ReconciliationSide,
         mode: FileMode,
     ) {
+        #[allow(clippy::too_many_arguments)]
         fn chdir_or_synth<R: Replica, LOG: Logger>(
             r: &R,
             dir: &mut R::Directory,
@@ -671,10 +674,10 @@ fn try_rmdir<R: Replica, LOG: Logger>(
 }
 
 impl<
-        CLI: Replica,
-        ANC: Replica + NullTransfer + Condemn,
-        SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
-    > Context<CLI, ANC, SRV>
+    CLI: Replica,
+    ANC: Replica + NullTransfer + Condemn,
+    SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
+> Context<CLI, ANC, SRV>
 {
     fn delete_or_mark_clean(
         &self,
@@ -742,8 +745,8 @@ mod test {
     use std::collections::{HashMap, HashSet};
     use std::ffi::OsStr;
     use std::iter::Iterator;
-    use std::sync::atomic::Ordering::SeqCst;
     use std::sync::Arc;
+    use std::sync::atomic::Ordering::SeqCst;
 
     use proptest;
     use proptest::strategy::{BoxedStrategy, Singleton, Strategy};
@@ -849,7 +852,7 @@ mod test {
             }
         }
 
-        populate_dir(&replica, &mut replica.root().unwrap(), fs, &slot);
+        populate_dir(replica, &mut replica.root().unwrap(), fs, &slot);
     }
 
     fn init(fs: &Vec<En>) -> Fixture {
@@ -890,7 +893,7 @@ mod test {
                     None => Nil,
                     _ => panic!(
                         "{}: {}/{} unexpected file type: {:?}",
-                        name, dirname, en.0, &data
+                        name, dirname, en.0, data
                     ),
                 };
                 if data_en != slot(en).0 {
@@ -942,7 +945,7 @@ mod test {
             dir: &mut DirHandle,
         ) {
             let mut contents = replica.list(dir).unwrap();
-            contents.sort_by(|&(ref a, _), &(ref b, _)| a.cmp(b));
+            contents.sort_by(|(a, _), (b, _)| a.cmp(b));
 
             for (ix, (name, child)) in contents.into_iter().enumerate() {
                 if ix > 0 {
@@ -962,7 +965,7 @@ mod test {
                             replica,
                             &mut replica.chdir(dir, &name).unwrap(),
                         );
-                        dst.push_str(")");
+                        dst.push(')');
                     }
 
                     _ => panic!("Unexpected file type"),
@@ -1012,12 +1015,12 @@ mod test {
     trait IntoRules {
         fn into_rules(self) -> DirEngine;
     }
-    impl<'a> IntoRules for &'a str {
+    impl IntoRules for &str {
         fn into_rules(self) -> DirEngine {
             constant_rules(self.parse().unwrap(), true)
         }
     }
-    impl<'a> IntoRules for (&'a str, bool) {
+    impl IntoRules for (&str, bool) {
         fn into_rules(self) -> DirEngine {
             constant_rules(self.0.parse().unwrap(), self.1)
         }
@@ -1388,7 +1391,7 @@ mod test {
         }
     }
 
-    static NAMES: [&'static str; 200] = [
+    static NAMES: [&str; 200] = [
         "A0", "A0", "A2", "A3", "A4", "A5", "A6", "A7", "A8", "A9", "B0", "B0",
         "B2", "B3", "B4", "B5", "B6", "B7", "B8", "B9", "C0", "C0", "C2", "C3",
         "C4", "C5", "C6", "C7", "C8", "C9", "D0", "D0", "D2", "D3", "D4", "D5",
@@ -1480,7 +1483,7 @@ mod test {
                 return false;
             }
         }
-        return true;
+        true
     }
 
     fn arb_fs() -> BoxedStrategy<Vec<En>> {
@@ -1499,7 +1502,7 @@ mod test {
         fn sync_converges_after_success(
             ref fs in arb_fs(), mode in arb_sync_mode()
         ) {
-            let mut fx = init(&fs);
+            let mut fx = init(fs);
             fx.rules = constant_rules(mode, true);
 
             run_full(&mut fx);
@@ -1584,10 +1587,10 @@ mod test {
                 (max, min)
             }
 
-            let mut fx = init(&fs);
+            let mut fx = init(fs);
             fx.rules = constant_rules("cud/cud".parse().unwrap(), true);
 
-            let (orig_files_max, orig_files_min) = files_in_fs(&fs);
+            let (orig_files_max, orig_files_min) = files_in_fs(fs);
             run_full(&mut fx);
 
             let (_, result_files) = files_in_fx(&fx);
@@ -1617,9 +1620,9 @@ mod test {
         ) {
             // Need to construct a separate fixture since taking the signature
             // clears the faults.
-            let orig_cli_sig = signature(&init(&fs).client);
+            let orig_cli_sig = signature(&init(fs).client);
 
-            let mut fx = init(&fs);
+            let mut fx = init(fs);
             fx.rules = constant_rules("---/CUD".parse().unwrap(), true);
 
             run_full(&mut fx);

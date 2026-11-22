@@ -22,7 +22,7 @@
 //! implementation is split into two pieces:
 //!
 //! - The `dao` submodule handles setting the database up and exposes primitive
-//! operations on the store.
+//!   operations on the store.
 //!
 //! - The `replica` submodule implements the `Replica` trait atop `dao`.
 //!

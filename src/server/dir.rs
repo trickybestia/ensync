@@ -47,18 +47,18 @@
 //!
 //! - A SHA-3 HMAC (32 bytes)
 //! - A 4-byte little-endian integer indicating the length of the data in
-//! bytes (including this integer, but not including the HMAC).
+//!   bytes (including this integer, but not including the HMAC).
 //! - The content of the chunk in fourleaf. For everything but the header, this
-//! is a `[v0::EntryPair]`.
+//!   is a `[v0::EntryPair]`.
 //! - Arbitrary data padding the content to the declared number of BLKSZ-byte
-//! blocks.
+//!   blocks.
 //!
 //! The HMAC is defined as the SHA-3 over the following data:
 //!
 //! - The byte content of the chunk, including the length prefix and any
-//! padding at the end.
+//!   padding at the end.
 //! - If there is a chunk before this one, the HMAC of that chunk. Otherwise,
-//! UNKNOWN_HASH.
+//!   UNKNOWN_HASH.
 //! - The HMAC secret.
 //!
 //! ## Semantics
@@ -81,11 +81,8 @@ use std::ffi::{OsStr, OsString};
 use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::usize;
 
-use flate2;
 use fourleaf::{self, Deserialize, Serialize, UnknownFields};
-use tiny_keccak;
 
 use crate::block_xfer::*;
 use crate::defs::*;
@@ -132,12 +129,12 @@ fourleaf_retrofit!(struct Header : {} {} {
     [1] dir_id: HashId = this.dir_id,
     [2] ver: u64 = this.ver,
     [3] fmt: u32 = this.fmt,
-    { Ok(Header { dir_id: dir_id, ver: ver, fmt: fmt }) }
+    { Ok(Header { dir_id, ver, fmt }) }
 });
 
 mod v0 {
-    use fourleaf::adapt::Copied;
     use fourleaf::UnknownFields;
+    use fourleaf::adapt::Copied;
 
     use crate::defs::*;
 
@@ -181,7 +178,7 @@ mod v0 {
             [1] mode: FileMode = mode,
             [2] id: HashId = id,
             (?) unknown: Copied<UnknownFields<'static>> = unknown,
-            { Ok(Entry::Directory { mode: mode, id: id, unknown: unknown.0 }) }
+            { Ok(Entry::Directory { mode, id, unknown: unknown.0 }) }
         },
         [2] Entry::Regular { mode, size, time, hmac, block_size,
                              ref blocks, ref unknown } => {
@@ -192,14 +189,14 @@ mod v0 {
             [5] block_size: u32 = block_size,
             [6] blocks: Vec<(HashId, HashId)> = blocks,
             (?) unknown: Copied<UnknownFields<'static>> = unknown,
-            { Ok(Entry::Regular { mode: mode, size: size, time: time,
-                                  hmac: hmac, block_size: block_size,
-                                  blocks: blocks, unknown: unknown.0 }) }
+            { Ok(Entry::Regular { mode, size, time,
+                                  hmac, block_size,
+                                  blocks, unknown: unknown.0 }) }
         },
         [3] Entry::Symlink { ref target, ref unknown } => {
             [1] target: Vec<u8> = target,
             (?) unknown: Copied<UnknownFields<'static>> = unknown,
-            { Ok(Entry::Symlink { target: target, unknown: unknown.0 }) }
+            { Ok(Entry::Symlink { target, unknown: unknown.0 }) }
         },
         [4] Entry::Deleted { ref unknown } => {
             (?) unknown: Copied<UnknownFields<'static>> = unknown,
@@ -294,12 +291,12 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             parent: None,
             path: "".into(),
             config: DirConfig::default(),
-            db: db,
-            key: key,
-            storage: storage,
+            db,
+            key,
+            storage,
             tx_ctr: Arc::new(AtomicUsize::new(1)),
-            block_size: block_size,
-            compression: compression,
+            block_size,
+            compression,
             content: Mutex::new(DirContent::default()),
         };
 
@@ -324,10 +321,10 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             }?;
 
         Ok(Dir {
-            id: id,
+            id,
             path: parent.subdir_path(name),
             db: parent.db.clone(),
-            config: parent.config.sub(&*name.to_string_lossy())?,
+            config: parent.config.sub(&name.to_string_lossy())?,
             key: parent.key.clone(),
             storage: parent.storage.clone(),
             tx_ctr: parent.tx_ctr.clone(),
@@ -352,7 +349,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             // this again and fail if the configuration is invalid.
             config: parent
                 .config
-                .sub(&*name.to_string_lossy())
+                .sub(&name.to_string_lossy())
                 .unwrap_or_else(|_| parent.config.clone()),
             key: parent.key.clone(),
             storage: parent.storage.clone(),
@@ -433,7 +430,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             for (name, entry) in &content.files {
                 match entry {
                     &v0::Entry::Directory { mode, id, .. }
-                        if test(&name, mode, &id)? =>
+                        if test(name, mode, &id)? =>
                     {
                         child_name = Some(name.to_owned());
                         child_id = Some(id);
@@ -450,7 +447,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                     id: child_id.unwrap(),
                     parent: None, // Not relevant
                     path: self.subdir_path(&name),
-                    config: self.config.sub(&*name.to_string_lossy())?,
+                    config: self.config.sub(&name.to_string_lossy())?,
                     db: self.db.clone(),
                     key: self.key.clone(),
                     storage: self.storage.clone(),
@@ -493,7 +490,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                 Ok(None)
             }
         })?;
-        self.save_latest_dir_ver(&mut *content)?;
+        self.save_latest_dir_ver(&mut content)?;
 
         // Make a best effort to free the side data in the database
         if let Some(child_id) = child_id {
@@ -548,7 +545,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                             subdir_id = Some(id);
                             Some(FileData::Directory(mode))
                         }
-                        Some(&v0::Entry::Symlink { ref target, .. }) => {
+                        Some(v0::Entry::Symlink { target, .. }) => {
                             Some(FileData::Symlink(OsString::from_vec(
                                 target.to_vec(),
                             )))
@@ -563,7 +560,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                         }) => {
                             // Prepare to replace this file by unlinking its
                             // constituents
-                            for &(ref id, ref linkid) in blocks {
+                            for (id, linkid) in blocks {
                                 self.storage.unlinkobj(
                                     tx,
                                     &xform_obj_id(id),
@@ -611,17 +608,15 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                             self.create_directory(tx, name)?
                         };
                         v0::Entry::Directory {
-                            mode: mode,
-                            id: id,
+                            mode,
+                            id,
                             unknown: UnknownFields::default(),
                         }
                     }
-                    Some(&FileData::Symlink(ref target)) => {
-                        v0::Entry::Symlink {
-                            target: target.clone().into_vec().into(),
-                            unknown: UnknownFields::default(),
-                        }
-                    }
+                    Some(FileData::Symlink(target)) => v0::Entry::Symlink {
+                        target: target.clone().into_vec(),
+                        unknown: UnknownFields::default(),
+                    },
                     Some(&FileData::Regular(mode, size, time, _)) => {
                         let mut xfer =
                             xfer.as_mut().ok_or(ErrorKind::MissingXfer)?;
@@ -637,11 +632,11 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
 
                                 if !self.storage.linkobj(
                                     tx,
-                                    &xform_obj_id(&blockid),
+                                    &xform_obj_id(blockid),
                                     &linkid,
                                 )? {
                                     self.upload_object(
-                                        tx, &blockid, &linkid, block_data,
+                                        tx, blockid, &linkid, block_data,
                                     )?;
                                 }
                                 Ok(())
@@ -649,12 +644,12 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                         )?;
                         xfer.finish(&blocklist)?;
                         v0::Entry::Regular {
-                            mode: mode,
-                            size: size,
-                            time: time,
+                            mode,
+                            size,
+                            time,
                             hmac: blocklist.total,
                             block_size: self.block_size as u32,
-                            blocks: blocks,
+                            blocks,
                             unknown: UnknownFields::default(),
                         }
                     }
@@ -665,7 +660,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                 Ok(Some(ret))
             })
             .map(|r| r.expect("edit() transaction aborted?"))?;
-        self.save_latest_dir_ver(&mut *content)?;
+        self.save_latest_dir_ver(&mut content)?;
         Ok(ret)
     }
 
@@ -683,7 +678,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         self.storage.putobj(
             tx,
             &xform_obj_id(blockid),
-            &linkid,
+            linkid,
             &ciphertext[..],
         )?;
         Ok(())
@@ -705,9 +700,9 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             if let v0::Entry::Directory { .. } = entry {
                 let old_config = self
                     .config
-                    .sub(&*old.to_string_lossy())
+                    .sub(&old.to_string_lossy())
                     .unwrap_or_else(|_| self.config.clone());
-                let new_config = self.config.sub(&*new.to_string_lossy())?;
+                let new_config = self.config.sub(&new.to_string_lossy())?;
                 if old_config != new_config {
                     return Err(ErrorKind::RenameChangesDirConfig.into());
                 }
@@ -725,7 +720,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             Ok(Some(()))
         })
         .map(|_| ())?;
-        self.save_latest_dir_ver(&mut *content)?;
+        self.save_latest_dir_ver(&mut content)?;
         Ok(())
     }
 
@@ -832,27 +827,24 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         // ever successfully parsed.
         if let Some((latest_ver, latest_len)) = {
             let db = self.db.lock().unwrap();
-            let v = db
-                .prepare(
-                    "SELECT `ver`, `len` FROM `latest_dir_ver` \
+
+            db.prepare(
+                "SELECT `ver`, `len` FROM `latest_dir_ver` \
                         WHERE `id` = ?1",
-                )
-                .binding(1, &self.id[..])
-                .first(|s| Ok((s.read::<i64, _>(0)?, s.read::<i64, _>(1)?)))?;
-            v
-        } {
-            if (version, cipher_data.len() as u64)
-                < (latest_ver as u64, latest_len as u64)
-            {
-                return Err(ErrorKind::DirectoryVersionRecessed(
-                    self.path.clone(),
-                    latest_ver as u64,
-                    latest_len as u64,
-                    version,
-                    cipher_data.len() as u64,
-                )
-                .into());
-            }
+            )
+            .binding(1, &self.id[..])
+            .first(|s| Ok((s.read::<i64, _>(0)?, s.read::<i64, _>(1)?)))?
+        } && (version, cipher_data.len() as u64)
+            < (latest_ver as u64, latest_len as u64)
+        {
+            return Err(ErrorKind::DirectoryVersionRecessed(
+                self.path.clone(),
+                latest_ver as u64,
+                latest_len as u64,
+                version,
+                cipher_data.len() as u64,
+            )
+            .into());
         }
 
         // Ok, now decrypt and read the header
@@ -896,14 +888,14 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         // Don't assign to *content until we've read everything successfully,
         // otherwise we might leave the directory in an inconsistent state
         let mut new_content = DirContent {
-            version: version,
-            cipher_version: cipher_version,
+            version,
+            cipher_version,
             length: cipher_data.len() as u32,
             files: Default::default(),
             list_up_to_date: false,
             prev_hmac: chunk_hmac,
             physical_entries: 0,
-            session_key: session_key,
+            session_key,
             iv: dir_append_iv(&cipher_data),
             synth: None,
         };
@@ -942,9 +934,9 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
 
     fn read_v0_chunk<
         T: for<'a> Deserialize<
-            fourleaf::io::TransparentCursor<&'a [u8]>,
-            fourleaf::de::style::Copying,
-        >,
+                fourleaf::io::TransparentCursor<&'a [u8]>,
+                fourleaf::de::style::Copying,
+            >,
     >(
         &self,
         data: &mut &[u8],
@@ -970,11 +962,11 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         chunk_hmac.copy_from_slice(&data[0..UNKNOWN_HASH.len()]);
         *data = &data[chunk_hmac.len()..];
 
-        let len_bytes = ((data[0] as usize) << 0)
+        let len_bytes = (data[0] as usize)
             | ((data[1] as usize) << 8)
             | ((data[2] as usize) << 16)
             | ((data[3] as usize) << 24);
-        let len_blocks = (len_bytes + BLKSZ - 1) / BLKSZ;
+        let len_blocks = len_bytes.div_ceil(BLKSZ);
         if data.len() < len_blocks * BLKSZ {
             return Err(ErrorKind::ServerDirectoryCorrupt(
                 self.path.clone(),
@@ -1073,11 +1065,11 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         entry: v0::Entry,
     ) -> Result<()> {
         if content.rewrite_instead_of_append() {
-            content.apply_entry((name.into_vec().into(), entry));
+            content.apply_entry((name.into_vec(), entry));
             self.rewrite(tx, content, true)?;
         } else {
             self.append_entry(tx, content, &name, &entry)?;
-            content.apply_entry((name.into_vec().into(), entry));
+            content.apply_entry((name.into_vec(), entry));
         }
 
         Ok(())
@@ -1201,7 +1193,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         }
 
         // Pad until a multiple of the AES block size
-        while dst.len() % BLKSZ != 0 {
+        while !dst.len().is_multiple_of(BLKSZ) {
             dst.push(0);
         }
 
@@ -1220,7 +1212,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             id: rand_hashid(),
             parent: None,          // Not needed
             path: OsString::new(), // Not needed
-            config: self.config.sub(&*name.to_string_lossy())?,
+            config: self.config.sub(&name.to_string_lossy())?,
             db: self.db.clone(),
             key: self.key.clone(),
             storage: self.storage.clone(),
@@ -1241,7 +1233,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             let parent = self.parent.as_ref().expect("Synthetic root dir");
             // Make sure that the configuration is valid, since `synthdir` has
             // no opportunity to fail.
-            parent.config.sub(&*name.to_string_lossy())?;
+            parent.config.sub(&name.to_string_lossy())?;
 
             let mut parent_content = parent.content.lock().unwrap();
             parent.materialise(&mut parent_content)?;
@@ -1264,7 +1256,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                     parent_content,
                     name.clone(),
                     v0::Entry::Directory {
-                        mode: mode,
+                        mode,
                         id: self.id,
                         unknown: UnknownFields::default(),
                     },
@@ -1282,7 +1274,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
 
 impl DirContent {
     fn apply_entry(&mut self, entry: v0::EntryPair) {
-        let name = OsString::from_vec(entry.0.into());
+        let name = OsString::from_vec(entry.0);
 
         match entry.1 {
             v0::Entry::Deleted { .. } => {

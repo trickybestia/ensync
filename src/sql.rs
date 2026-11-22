@@ -31,7 +31,6 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 use std::result::Result as StdResult;
 
-use sqlite;
 use sqlite::*;
 
 /// Executes `f` within a transaction.
@@ -60,7 +59,7 @@ where
             // Silently drop errors from ROLLBACK, since it will fail if
             // the error above caused SQLite to roll back automatically.
             drop(cxn.execute("ROLLBACK"));
-            Err(e.into())
+            Err(e)
         }
     }
 }

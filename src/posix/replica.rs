@@ -20,7 +20,6 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Seek, Write};
-use std::mem;
 use std::os::unix;
 use std::os::unix::fs::DirBuilderExt;
 use std::os::unix::prelude::*;
@@ -100,15 +99,15 @@ trait OnDao {
     fn on_dao<T, F: FnOnce(&Dao) -> T>(&self, f: F) -> T;
 }
 
-impl<'a> OnDao for &'a Dao {
+impl OnDao for &Dao {
     fn on_dao<T, F: FnOnce(&Dao) -> T>(&self, f: F) -> T {
-        f(*self)
+        f(self)
     }
 }
 
-impl<'a> OnDao for &'a Mutex<Dao> {
+impl OnDao for &Mutex<Dao> {
     fn on_dao<T, F: FnOnce(&Dao) -> T>(&self, f: F) -> T {
-        f(&*self.lock().unwrap())
+        f(&self.lock().unwrap())
     }
 }
 
@@ -146,11 +145,7 @@ fn metadata_to_fd<D: OnDao>(
         let hash = get_or_compute_hash(
             path,
             dao,
-            &InodeStatus {
-                ino: ino,
-                mtime: mtime,
-                size: size,
-            },
+            &InodeStatus { ino, mtime, size },
             calc_hash_if_unknown,
             config,
         )
@@ -308,7 +303,7 @@ impl Replica for PosixReplica {
             })?;
 
             let name = entry.file_name();
-            if OsStr::new(".") == &name || OsStr::new("..") == &name {
+            if OsStr::new(".") == name || OsStr::new("..") == name {
                 continue;
             }
 
@@ -323,7 +318,7 @@ impl Replica for PosixReplica {
                 &md,
                 &*self.dao,
                 true,
-                &*self.config,
+                &self.config,
             )?;
             dir.toggle_file(File(&name, &fd));
             ret.push((name, fd));
@@ -368,7 +363,7 @@ impl Replica for PosixReplica {
             &old_md,
             &*self.dao,
             false,
-            &*self.config,
+            &self.config,
         )?;
 
         fs::rename(&old_path, &new_path).chain_err(|| {
@@ -431,7 +426,7 @@ impl Replica for PosixReplica {
         })?;
 
         dir.toggle_file(source);
-        return Ok(ret);
+        Ok(ret)
     }
 
     fn update(
@@ -470,20 +465,16 @@ impl Replica for PosixReplica {
                     &FileData::Regular(_, _, t1, _),
                     &FileData::Regular(_, _, t2, _),
                 ) = (old, new)
+                    && t1 != t2
                 {
-                    if t1 != t2 {
-                        posix::set_mtime_path(&path, t2).chain_err(|| {
-                            format!(
-                                "Error setting mtime on '{}'",
-                                path.display()
-                            )
-                        })?;
-                        let _ = self
-                            .dao
-                            .lock()
-                            .unwrap()
-                            .update_cache_mtime(path.as_os_str(), t2);
-                    }
+                    posix::set_mtime_path(&path, t2).chain_err(|| {
+                        format!("Error setting mtime on '{}'", path.display())
+                    })?;
+                    let _ = self
+                        .dao
+                        .lock()
+                        .unwrap()
+                        .update_cache_mtime(path.as_os_str(), t2);
                 }
                 dir.toggle_file(File(name, old));
                 dir.toggle_file(File(name, new));
@@ -598,8 +589,8 @@ impl Replica for PosixReplica {
                     file: fs::File::open(dir.child(file.0))?,
                     dir: dir.clone(),
                     name: file.0.to_owned(),
-                    mode: mode,
-                    expected_hash: expected_hash,
+                    mode,
+                    expected_hash,
                     config: self.config.clone(),
                     dao: self.dao.clone(),
                 }))
@@ -620,7 +611,7 @@ impl Replica for PosixReplica {
             {
                 let mut watcher = watcher.lock().unwrap();
                 Some(
-                    mem::replace(&mut watcher.dirty, HashSet::new())
+                    std::mem::take(&mut watcher.dirty)
                         .into_iter()
                         .filter_map(|v| watcher.watched.get(&v))
                         .map(|s| s.to_owned())
@@ -644,7 +635,7 @@ impl Replica for PosixReplica {
 
         for clean_dir in dao.iter_clean_dirs()? {
             let (path, expected_hash) = clean_dir?;
-            if dir_filter.as_ref().map_or(false, |f| !f.contains(&path)) {
+            if dir_filter.as_ref().is_some_and(|f| !f.contains(&path)) {
                 continue;
             }
 
@@ -655,8 +646,7 @@ impl Replica for PosixReplica {
                 Ok(mut diriter) => {
                     while let Some(Ok(entry)) = diriter.next() {
                         let name = entry.file_name();
-                        if OsStr::new(".") == &name || OsStr::new("..") == &name
-                        {
+                        if OsStr::new(".") == name || OsStr::new("..") == name {
                             continue;
                         }
 
@@ -671,7 +661,7 @@ impl Replica for PosixReplica {
                             &md,
                             &*dao,
                             false,
-                            &*self.config,
+                            &self.config,
                         )?;
                         dir.toggle_file(File(&name, &fd));
                     }
@@ -696,7 +686,7 @@ impl Replica for PosixReplica {
     fn clean_up(&self) -> Result<()> {
         self.clean_scratch()?;
         let _ = self.dao.lock().unwrap().prune_hash_cache(
-            &self.config.root.as_os_str(),
+            self.config.root.as_os_str(),
             self.config.cache_generation,
         );
         Ok(())
@@ -720,7 +710,7 @@ impl PosixReplica {
         let private_dir = private_dir.as_ref();
 
         let dao = Dao::open(
-            &private_dir.join("db.sqlite").to_str().ok_or_else(|| {
+            private_dir.join("db.sqlite").to_str().ok_or_else(|| {
                 format!("Path '{}' is not valid UTF-8", private_dir.display())
             })?,
         )?;
@@ -733,9 +723,9 @@ impl PosixReplica {
                 hmac_secret: hmac_secret.to_vec(),
                 root: root.to_owned(),
                 private_dir: private_dir.to_owned(),
-                private_dir_dev: private_dir_dev,
-                block_size: block_size,
-                cache_generation: cache_generation,
+                private_dir_dev,
+                block_size,
+                cache_generation,
             }),
             dao: Arc::new(Mutex::new(dao)),
             tmpix: AtomicUsize::new(0),
@@ -778,7 +768,7 @@ impl PosixReplica {
     ) -> io::Result<(T, PathBuf)> {
         loop {
             let ix = self.tmpix.fetch_add(1, Ordering::SeqCst);
-            let mut path: PathBuf = self.config.private_dir.clone().into();
+            let mut path: PathBuf = self.config.private_dir.clone();
             path.push(format!("scratch-{}", ix));
 
             match create(&path) {
@@ -829,9 +819,9 @@ impl PosixReplica {
                     })?;
                     let _ = self.dao.lock().unwrap().rename_cache(
                         old_path.as_os_str(),
-                        &new_path.as_os_str(),
+                        new_path.as_os_str(),
                     );
-                    return Ok(new_path.into());
+                    return Ok(new_path);
                 } else {
                     return Err(err.into());
                 }
@@ -901,7 +891,7 @@ impl PosixReplica {
                     )
                 })?;
                 before_establish()?;
-                fs::rename(&scratch_path, &dir.child(source.0)).chain_err(
+                fs::rename(&scratch_path, dir.child(source.0)).chain_err(
                     || {
                         format!(
                             "Failed to move new symlink to '{}'",
@@ -1181,11 +1171,7 @@ impl PosixReplica {
             &bl.total,
             &bl.blocks[..],
             block_size,
-            &InodeStatus {
-                mtime: mtime,
-                ino: ino,
-                size: size,
-            },
+            &InodeStatus { mtime, ino, size },
             self.config.cache_generation,
         )?;
         Ok(())
@@ -1197,11 +1183,11 @@ impl PosixReplica {
     /// `Err`.
     fn check_matches(&self, path: &Path, fd: &FileData) -> Result<()> {
         let curr_fd = metadata_to_fd(
-            &path,
-            &path_metadata(&path)?,
+            path,
+            &path_metadata(path)?,
             &*self.dao,
             false,
-            &*self.config,
+            &self.config,
         )?;
         if !curr_fd.matches(fd) {
             Err(ErrorKind::ExpectationNotMatched.into())
@@ -1217,7 +1203,7 @@ impl PosixReplica {
             if file
                 .file_name()
                 .to_str()
-                .map_or(false, |name| name.starts_with("scratch"))
+                .is_some_and(|name| name.starts_with("scratch"))
             {
                 let path = file.path();
                 let _ = fs::remove_file(&path);
@@ -1367,14 +1353,14 @@ impl Watch for PosixReplica {
                         // the sync loop. A rename can contain both old and new paths.
                         if event.need_rescan() {
                             watch.set_context_lost();
-                        } else if event
-                            .paths
-                            .into_iter()
-                            .fold(false, |dirty, path| {
-                                touch(&watcher, path) || dirty
-                            })
-                        {
-                            watch.set_dirty();
+                        } else {
+                            let mut dirty = false;
+                            for path in event.paths {
+                                dirty |= touch(&watcher, path);
+                            }
+                            if dirty {
+                                watch.set_dirty();
+                            }
                         }
                     }
                     Err(err) => {
@@ -1412,7 +1398,7 @@ mod test {
     use crate::defs::test_helpers::*;
     use crate::posix::set_mtime_path;
 
-    static SECRET: &'static str = "secret";
+    static SECRET: &str = "secret";
     const BLOCK_SZ: usize = 4;
 
     fn new_dirs() -> (TempDir, TempDir) {
@@ -1493,7 +1479,7 @@ mod test {
         block_xfer::ContentAddressableSource {
             blocks: bl,
             block_size: BLOCK_SZ,
-            fetch: Arc::new(MemoryBlockFetch { blocks: blocks }),
+            fetch: Arc::new(MemoryBlockFetch { blocks }),
         }
     }
 
@@ -1527,7 +1513,7 @@ mod test {
 
         if let FileData::Regular(mode, size, _, hash) = list[0].1 {
             assert_eq!(0o644, mode);
-            assert_eq!("hello world".as_bytes().len() as FileSize, size);
+            assert_eq!("hello world".len() as FileSize, size);
             assert_eq!(
                 block_xfer::stream_to_blocks(
                     "hello world".as_bytes(),
@@ -1580,9 +1566,7 @@ mod test {
                 assert_eq!(FileData::Directory(0o700), fd);
             } else if oss("sym") == name {
                 assert_eq!(FileData::Symlink(oss("target")), fd);
-            } else if oss("fifo") == name {
-                assert_eq!(FileData::Special, fd);
-            } else if oss(PRIVATE_DIR_NAME) == name {
+            } else if oss("fifo") == name || oss(PRIVATE_DIR_NAME) == name {
                 assert_eq!(FileData::Special, fd);
             } else {
                 panic!("Unexpected filename: {:?}", name);
@@ -2371,9 +2355,9 @@ mod test {
         let foo_list = replica.list(&mut dfoo).unwrap();
         assert_eq!(2, foo_list.len());
         for (name, fd) in foo_list {
-            if &oss("bar") == &name {
+            if oss("bar") == name {
                 assert_eq!(FileData::Directory(0o740), fd);
-            } else if &oss("baz") == &name {
+            } else if oss("baz") == name {
                 assert_eq!(FileData::Directory(0o770), fd);
             } else {
                 panic!("Unexpected filename: {:?}", name);

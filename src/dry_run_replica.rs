@@ -64,9 +64,7 @@ impl<T: Replica> Replica for DryRunReplica<T> {
     }
 
     fn is_dir_dirty(&self, dir: &Self::Directory) -> bool {
-        dir.delegate
-            .as_ref()
-            .map_or(true, |d| self.0.is_dir_dirty(d))
+        dir.delegate.as_ref().is_none_or(|d| self.0.is_dir_dirty(d))
     }
 
     fn set_dir_clean(&self, _: &Self::Directory) -> Result<bool> {
@@ -196,9 +194,7 @@ impl<T: Replica> Replica for DryRunReplica<T> {
 }
 
 impl<T: NullTransfer> NullTransfer for DryRunReplica<T> {
-    fn null_transfer(_: &FileData) -> () {
-        ()
-    }
+    fn null_transfer(_: &FileData) {}
 }
 
 impl<T: Condemn> Condemn for DryRunReplica<T> {

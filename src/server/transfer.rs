@@ -19,8 +19,6 @@
 use std::io;
 use std::sync::Arc;
 
-use flate2;
-
 use crate::block_xfer::BlockFetch;
 use crate::defs::HashId;
 use crate::errors::*;
@@ -33,7 +31,7 @@ pub struct ServerTransferOut<S: Storage + ?Sized> {
 
 impl<S: Storage + ?Sized> ServerTransferOut<S> {
     pub fn new(storage: Arc<S>) -> Self {
-        ServerTransferOut { storage: storage }
+        ServerTransferOut { storage }
     }
 }
 

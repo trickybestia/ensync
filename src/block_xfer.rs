@@ -37,24 +37,24 @@
 //! server, has a number of benefits:
 //!
 //! - If only part of a large file has changed, we do not need to retransfer
-//! the whole thing. This is particularly important for things like mbox files
-//! (most edits occur at the very end), databases, and so forth.
+//!   the whole thing. This is particularly important for things like mbox files
+//!   (most edits occur at the very end), databases, and so forth.
 //!
 //! - The code is operationally simpler if we can load an entire transfer unit
-//! into memory. This way, we can SHA-3 sum the data, see whether the server
-//! already has it, and if not, transfer it. Without splitting into blocks, we
-//! would need to make a second pass through the data when transferring to the
-//! server, and this may yield a different SHA-3 sum in the case of concurrent
-//! edits. It would also put more load on the disk cache.
+//!   into memory. This way, we can SHA-3 sum the data, see whether the server
+//!   already has it, and if not, transfer it. Without splitting into blocks, we
+//!   would need to make a second pass through the data when transferring to the
+//!   server, and this may yield a different SHA-3 sum in the case of concurrent
+//!   edits. It would also put more load on the disk cache.
 //!
 //! - Sparse files with sparse areas larger than the block size remain
-//! essentially sparse, as all the sparse areas will be backed by the same blob
-//! on the server. For this benefit to occur on both sides, the client also
-//! needs to check for all-zero blocks and extend the file rather than
-//! explicitly writing them.
+//!   essentially sparse, as all the sparse areas will be backed by the same blob
+//!   on the server. For this benefit to occur on both sides, the client also
+//!   needs to check for all-zero blocks and extend the file rather than
+//!   explicitly writing them.
 //!
 //! - An attacker which has copied files off the server is less able to
-//! determine properties about the data based on blob sizes.
+//!   determine properties about the data based on blob sizes.
 //!
 //! This module does not handle encryption itself; the blocks it passes through
 //! are still in cleartext.
@@ -125,8 +125,7 @@ pub fn stream_to_blocks<F: FnMut(&HashId, &[u8]) -> Result<()>, R: io::Read>(
     total_kc.update(secret);
 
     // Allocate in a vector so we don't blow 1MB of stack space
-    let mut block_data: Vec<u8> = Vec::new();
-    block_data.resize(block_size, 0);
+    let mut block_data: Vec<u8> = vec![0; block_size];
 
     // Read blocks until we read an empty block.
     loop {
@@ -137,7 +136,7 @@ pub fn stream_to_blocks<F: FnMut(&HashId, &[u8]) -> Result<()>, R: io::Read>(
                 Ok(0) => break,
                 Ok(nread) => off += nread,
                 Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
-                    continue
+                    continue;
                 }
                 Err(e) => return Err(e.into()),
             };
@@ -158,7 +157,7 @@ pub fn stream_to_blocks<F: FnMut(&HashId, &[u8]) -> Result<()>, R: io::Read>(
     total_kc.finalize(&mut hash);
     Ok(BlockList {
         total: hash,
-        blocks: blocks,
+        blocks,
     })
 }
 
@@ -220,7 +219,7 @@ pub fn blocks_to_stream<
                         .chain_err(|| "Error writing to output stream")?;
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::Interrupted => {
-                    continue
+                    continue;
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -232,7 +231,7 @@ pub fn blocks_to_stream<
         }
     }
 
-    return Ok(());
+    Ok(())
 }
 
 /// A file data source (eg, for `Replica::TransferIn` or
@@ -293,7 +292,7 @@ mod test {
         secret: &[u8],
     ) -> Result<Vec<u8>> {
         let mut output = Vec::new();
-        blocks_to_stream(&blocklist, &mut output, secret, |h| {
+        blocks_to_stream(blocklist, &mut output, secret, |h| {
             Ok(&blocks[h][..])
         })?;
         Ok(output)

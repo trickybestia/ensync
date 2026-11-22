@@ -20,8 +20,6 @@ use std::borrow::Cow;
 use std::ffi::{OsStr, OsString};
 use std::sync::{Arc, Mutex};
 
-use sqlite;
-
 use super::dao::*;
 use crate::defs::*;
 use crate::errors::*;
@@ -79,13 +77,10 @@ impl DirHandle {
     fn get_h(&self) -> Result<i64> {
         match *self {
             DirHandle::Real(RealDir(v)) => Ok(v),
-            DirHandle::Synth(ref sd) => {
-                match sd.lock().unwrap().id { Some(v) => {
-                    Ok(v)
-                } _ => {
-                    Err(ErrorKind::NotFound.into())
-                }}
-            }
+            DirHandle::Synth(ref sd) => match sd.lock().unwrap().id {
+                Some(v) => Ok(v),
+                _ => Err(ErrorKind::NotFound.into()),
+            },
         }
     }
 
@@ -128,7 +123,7 @@ impl DirHandle {
             parent: self.clone(),
             id: None,
             name: name.to_owned(),
-            mode: mode,
+            mode,
         })))
     }
 
@@ -162,11 +157,11 @@ impl AncestorReplica {
 }
 
 trait AsEntry {
-    fn as_entry(&self, dir: i64) -> FileEntry;
+    fn as_entry(&self, dir: i64) -> FileEntry<'_>;
 }
 
 impl AsEntry for FileData {
-    fn as_entry(&self, dir: i64) -> FileEntry {
+    fn as_entry(&self, dir: i64) -> FileEntry<'_> {
         match *self {
             FileData::Regular(mode, _, time, ref hash) => FileEntry {
                 id: -1,
@@ -174,7 +169,7 @@ impl AsEntry for FileData {
                 name: Cow::Borrowed(b""),
                 typ: T_REGULAR,
                 mode: mode as i64,
-                mtime: time as i64,
+                mtime: time,
                 content: Cow::Borrowed(hash),
             },
             FileData::Directory(mode) => FileEntry {
@@ -203,7 +198,7 @@ impl AsEntry for FileData {
 }
 
 impl<'a> AsEntry for File<'a> {
-    fn as_entry(&self, dir: i64) -> FileEntry {
+    fn as_entry(&self, dir: i64) -> FileEntry<'_> {
         let mut e = self.1.as_entry(dir);
         e.name = Cow::Borrowed(self.0.as_nbytes());
         e
@@ -248,7 +243,7 @@ impl Replica for AncestorReplica {
                                 None
                             } else {
                                 let mut hash = [0; 32];
-                                hash.copy_from_slice(&*e.content);
+                                hash.copy_from_slice(&e.content);
                                 Some(FileData::Regular(
                                     e.mode as FileMode,
                                     0,
@@ -335,7 +330,7 @@ impl Replica for AncestorReplica {
         xfer: FileData,
     ) -> Result<FileData> {
         let dao = self.dao.lock().unwrap();
-        let h = dir.mk_h(&*dao)?;
+        let h = dir.mk_h(&dao)?;
         if dao.create(&File(source.0, &xfer).as_entry(h))?.is_some() {
             Ok(xfer)
         } else {
@@ -488,18 +483,25 @@ mod test {
         let (replica, mut root) = new();
         assert!(replica.list(&mut root).unwrap().is_empty());
         assert!(replica.rename(&mut root, &oss("foo"), &oss("bar")).is_err());
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Directory(0o666)))
-            .is_err());
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Directory(0o666),
-                &FileData::Directory(0o777),
-                FileData::Directory(0o777)
-            )
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Directory(0o666))
+                )
+                .is_err()
+        );
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Directory(0o666),
+                    &FileData::Directory(0o777),
+                    FileData::Directory(0o777)
+                )
+                .is_err()
+        );
         assert!(replica.chdir(&root, &oss("foo")).is_err());
     }
 
@@ -567,9 +569,14 @@ mod test {
         let (replica, mut root) = new();
 
         mkdir(&replica, &mut root, "foo", 0o666).unwrap();
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Directory(0o777)))
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Directory(0o777))
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -580,9 +587,14 @@ mod test {
         let mut subdir = replica.chdir(&root, &oss("foo")).unwrap();
         mkdir(&replica, &mut subdir, "bar", 0o777).unwrap();
 
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Directory(0o666)))
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Directory(0o666))
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -590,15 +602,17 @@ mod test {
         let (replica, mut root) = new();
 
         mkdir(&replica, &mut root, "foo", 0o666).unwrap();
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Directory(0o777),
-                &FileData::Directory(0o111),
-                FileData::Directory(0o111)
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Directory(0o777),
+                    &FileData::Directory(0o111),
+                    FileData::Directory(0o111)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -647,15 +661,17 @@ mod test {
         let mut subdir = replica.chdir(&root, &oss("foo")).unwrap();
         mksym(&replica, &mut subdir, "foo", "bar").unwrap();
 
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Directory(0o666),
-                &FileData::Symlink(oss("bar")),
-                FileData::Symlink(oss("bar"))
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Directory(0o666),
+                    &FileData::Symlink(oss("bar")),
+                    FileData::Symlink(oss("bar"))
+                )
+                .is_err()
+        );
     }
 
     #[test]

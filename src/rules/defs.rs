@@ -21,9 +21,10 @@ use std::fmt;
 use std::str::FromStr;
 
 /// A single field of a sync mode.
-#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord, Default)]
 pub enum SyncModeSetting {
     /// This type of propagation shall not happen.
+    #[default]
     Off,
     /// This type of propagation shall happen. Handle conflicts regarding it
     /// conservatively.
@@ -31,12 +32,6 @@ pub enum SyncModeSetting {
     /// This type of propagation shall happen. In case of conflict, "force" the
     /// resolution to be this particular propagation.
     Force,
-}
-
-impl Default for SyncModeSetting {
-    fn default() -> Self {
-        SyncModeSetting::Off
-    }
 }
 
 impl SyncModeSetting {
@@ -139,7 +134,7 @@ impl FromStr for SyncMode {
                         update: SyncModeSetting::Force,
                         delete: SyncModeSetting::Force,
                     },
-                })
+                });
             }
 
             "reset-client" => {
@@ -154,7 +149,7 @@ impl FromStr for SyncMode {
                         update: SyncModeSetting::Off,
                         delete: SyncModeSetting::Off,
                     },
-                })
+                });
             }
 
             "conservative-sync" | "sync" => {
@@ -169,7 +164,7 @@ impl FromStr for SyncMode {
                         update: SyncModeSetting::On,
                         delete: SyncModeSetting::On,
                     },
-                })
+                });
             }
 
             "aggressive-sync" => {
@@ -184,7 +179,7 @@ impl FromStr for SyncMode {
                         update: SyncModeSetting::Force,
                         delete: SyncModeSetting::Force,
                     },
-                })
+                });
             }
 
             _ => (),

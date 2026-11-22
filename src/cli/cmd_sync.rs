@@ -22,7 +22,7 @@ use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{self, stderr, stdout, Read, Write};
+use std::io::{self, Read, Write, stderr, stdout};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::SeqCst;
@@ -175,8 +175,8 @@ impl LoggerImpl {
             format!("{} {}", size, suffixes[suffix_ix])
         }
 
-        struct FDD<'a>(&'a FileData);
-        impl<'a> fmt::Display for FDD<'a> {
+        struct Fdd<'a>(&'a FileData);
+        impl<'a> fmt::Display for Fdd<'a> {
             fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
                 match *self.0 {
                     FileData::Directory(mode) => {
@@ -340,7 +340,7 @@ impl LoggerImpl {
                         side,
                         "create\
                                               \n        + {}",
-                        FDD(state)
+                        Fdd(state)
                     )
                 }
             }
@@ -371,8 +371,8 @@ impl LoggerImpl {
                     "update\
                                           \n        - {}\
                                           \n        + {}",
-                    FDD(old),
-                    FDD(new)
+                    Fdd(old),
+                    Fdd(new)
                 );
             }
 
@@ -404,7 +404,7 @@ impl LoggerImpl {
                         side,
                         "delete\
                                               \n        - {}",
-                        FDD(state)
+                        Fdd(state)
                     );
                 }
             }
@@ -415,7 +415,7 @@ impl LoggerImpl {
                     .unwrap()
                     .insert(Path::new(path).to_owned());
                 if self.include_ops_under_opped_directory
-                    || Path::new(path).parent().map_or(true, |p| {
+                    || Path::new(path).parent().is_none_or(|p| {
                         !self.recdel_directories.read().unwrap().contains(p)
                     })
                 {
@@ -495,23 +495,21 @@ impl LoggerImpl {
             }
         }
 
-        if reprint_spin {
-            if let Some(ref spin) = self.spin {
-                let mut spin = spin.lock().unwrap();
-                spin.cycle = (spin.cycle + 1) % 4;
-                perr!(
-                    "\x1B[K{} in: +{} *{} -{} {}, out: +{} *{} -{} {}\r",
-                    ['-', '\\', '|', '/'][spin.cycle as usize],
-                    spin.cli.created,
-                    spin.cli.updated,
-                    spin.cli.deleted,
-                    pretty_size(spin.cli.transfer),
-                    spin.srv.created,
-                    spin.srv.updated,
-                    spin.srv.deleted,
-                    pretty_size(spin.srv.transfer)
-                );
-            }
+        if reprint_spin && let Some(ref spin) = self.spin {
+            let mut spin = spin.lock().unwrap();
+            spin.cycle = (spin.cycle + 1) % 4;
+            perr!(
+                "\x1B[K{} in: +{} *{} -{} {}, out: +{} *{} -{} {}\r",
+                ['-', '\\', '|', '/'][spin.cycle as usize],
+                spin.cli.created,
+                spin.cli.updated,
+                spin.cli.deleted,
+                pretty_size(spin.cli.transfer),
+                spin.srv.created,
+                spin.srv.updated,
+                spin.srv.deleted,
+                pretty_size(spin.srv.transfer)
+            );
         }
     }
 
@@ -583,11 +581,7 @@ impl LoggerImpl {
                 }
                 impl Ifc for bool {
                     fn ifc(self, ifc: char, fill: char) -> char {
-                        if self {
-                            ifc
-                        } else {
-                            fill
-                        }
+                        if self { ifc } else { fill }
                     }
                 }
 
@@ -724,10 +718,10 @@ impl LoggerImpl {
                                 Some('.')
                             },
                             file_type: file_type(new),
-                            content_change: content_change,
-                            mode_change: mode_change,
-                            time_change: time_change,
-                            size_change: size_change,
+                            content_change,
+                            mode_change,
+                            time_change,
+                            size_change,
                             ..LineItem::default()
                         },
                         (parent, name)
@@ -757,6 +751,7 @@ impl LoggerImpl {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn run(
     config: &Config,
     storage: Arc<dyn Storage>,
@@ -865,7 +860,7 @@ pub fn run(
     let log = LoggerImpl {
         client_root: config.client_root.to_owned(),
         verbose_level: level,
-        include_ops_under_opped_directory: include_ops_under_opped_directory,
+        include_ops_under_opped_directory,
         itemise_level: if !itemise {
             0
         } else if !itemise_unchanged {
@@ -873,8 +868,8 @@ pub fn run(
         } else {
             INFO
         },
-        include_ancestors: include_ancestors,
-        colour: colour,
+        include_ancestors,
+        colour,
         created_directories: RwLock::new(HashSet::new()),
         recdel_directories: RwLock::new(HashSet::new()),
         spin: if spin {
@@ -1072,7 +1067,7 @@ fn run_sync<
     }
     context.run_work();
     for thread in threads {
-        let _ = thread.join().expect("Child thread panicked");
+        thread.join().expect("Child thread panicked");
     }
     if spin {
         if show_messages {
@@ -1102,15 +1097,15 @@ fn run_sync<
 
     let client_cleanup = spawn!(|context| context.cli.clean_up());
     let server_cleanup = spawn!(|context| context.srv.clean_up());
-    if let Err(err) = client_cleanup.join().expect("Child thread panicked") {
-        if level >= ERROR {
-            perrln!("Client cleanup failed: {}", err);
-        }
+    if let Err(err) = client_cleanup.join().expect("Child thread panicked")
+        && level >= ERROR
+    {
+        perrln!("Client cleanup failed: {}", err);
     }
-    if let Err(err) = server_cleanup.join().expect("Child thread panicked") {
-        if level >= ERROR {
-            perrln!("Server cleanup failed: {}", err);
-        }
+    if let Err(err) = server_cleanup.join().expect("Child thread panicked")
+        && level >= ERROR
+    {
+        perrln!("Server cleanup failed: {}", err);
     }
 
     Ok(())

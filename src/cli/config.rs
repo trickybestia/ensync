@@ -35,7 +35,7 @@ use crate::defs::{HashId, PRIVATE_DIR_NAME};
 use crate::errors::*;
 use crate::rules::engine::SyncRules;
 
-const CONFIG_FILE_NAME: &'static str = "config.toml";
+const CONFIG_FILE_NAME: &str = "config.toml";
 
 #[derive(Clone)]
 pub struct Config {
@@ -294,7 +294,7 @@ impl Config {
                 parse_compression_name(filename, name)?
             },
 
-            sync_rules: SyncRules::parse(&rules, "rules")
+            sync_rules: SyncRules::parse(rules, "rules")
                 .map(Arc::new)
                 .chain_err(|| {
                     format!(
@@ -303,7 +303,7 @@ impl Config {
                     )
                 })?,
 
-            hash: hash,
+            hash,
         })
     }
 }
@@ -318,11 +318,13 @@ pub fn parse_compression_name(
         "default" | "on" => flate2::Compression::default(),
         "best" => flate2::Compression::best(),
         "fast" => flate2::Compression::fast(),
-        _ => bail!(format!(
-            "{}: Invalid compression type '{}'",
-            filename.display(),
-            name
-        )),
+        _ => {
+            bail!(format!(
+                "{}: Invalid compression type '{}'",
+                filename.display(),
+                name
+            ));
+        }
     })
 }
 
@@ -614,27 +616,27 @@ mode = "---/---"
 
         assert_eq!(
             Compression::none(),
-            super::parse_compression_name(&path, "off").unwrap()
+            super::parse_compression_name(path, "off").unwrap()
         );
         assert_eq!(
             Compression::none(),
-            super::parse_compression_name(&path, "none").unwrap()
+            super::parse_compression_name(path, "none").unwrap()
         );
         assert_eq!(
             Compression::default(),
-            super::parse_compression_name(&path, "default").unwrap()
+            super::parse_compression_name(path, "default").unwrap()
         );
         assert_eq!(
             Compression::default(),
-            super::parse_compression_name(&path, "on").unwrap()
+            super::parse_compression_name(path, "on").unwrap()
         );
         assert_eq!(
             Compression::fast(),
-            super::parse_compression_name(&path, "fast").unwrap()
+            super::parse_compression_name(path, "fast").unwrap()
         );
         assert_eq!(
             Compression::best(),
-            super::parse_compression_name(&path, "best").unwrap()
+            super::parse_compression_name(path, "best").unwrap()
         );
     }
 

@@ -129,7 +129,7 @@ impl DirConfig {
                             configs.to_owned(),
                             key.to_owned(),
                         )
-                        .into())
+                        .into());
                     }
                 }
             }

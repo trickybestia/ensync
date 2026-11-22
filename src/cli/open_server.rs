@@ -16,7 +16,7 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-use std::io::{stderr, Read, Write};
+use std::io::{Read, Write, stderr};
 use std::process;
 use std::sync::Arc;
 
@@ -66,14 +66,14 @@ pub fn connect_server_storage<
             // for some reason, so it is better to output that detail
             // rather than some obscure protocol error, if possible.
             drop(storage);
-            if let Ok(status) = child.wait() {
-                if !status.success() {
-                    return Err(format!(
-                        "Command `{}` failed with {}",
-                        command, status
-                    )
-                    .into());
-                }
+            if let Ok(status) = child.wait()
+                && !status.success()
+            {
+                return Err(format!(
+                    "Command `{}` failed with {}",
+                    command, status
+                )
+                .into());
             }
 
             // Either the command succeeded unexpectedly, or we failed
@@ -97,11 +97,10 @@ pub fn open_server_storage(
     show_connection: bool,
 ) -> Result<Arc<dyn Storage>> {
     match *config {
-        ServerConfig::Path(ref path) => {
-            Ok(Arc::new(LocalStorage::open(path).chain_err(|| {
-                "Failed to set up server in local filesystem"
-            })?))
-        }
+        ServerConfig::Path(ref path) => Ok(Arc::new(
+            LocalStorage::open(path)
+                .chain_err(|| "Failed to set up server in local filesystem")?,
+        )),
 
         ServerConfig::Shell(ref command, ref workdir) => {
             // Running the process this way doesn't fully play nicely with our
@@ -165,7 +164,7 @@ pub fn open_server_replica(
         Arc::new(keymgmt::derive_key_chain(&*storage, &passphrase[..])?)
     };
 
-    Ok(ServerReplica::new(
+    ServerReplica::new(
         config.private_root.join("server-state.sqlite"),
         key_chain,
         storage,
@@ -173,5 +172,5 @@ pub fn open_server_replica(
         config.block_size as usize,
         config.compression,
     )
-    .chain_err(|| "Failed to set up server replica")?)
+    .chain_err(|| "Failed to set up server replica")
 }

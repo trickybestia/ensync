@@ -104,7 +104,7 @@ fn put_kdflist<S: Storage + ?Sized>(
         storage.rmdir(
             tx,
             &DIRID_KEYS,
-            &secret_dir_ver(&old_ver, key),
+            &secret_dir_ver(old_ver, key),
             old_len,
         )?;
     }
@@ -393,7 +393,7 @@ where
     edit_kdflist(storage, get_root_passphrase, |kdflist, root_key| {
         for name in names.clone() {
             let name = name.as_ref();
-            for (_, e) in &kdflist.keys {
+            for e in kdflist.keys.values() {
                 if e.groups.contains_key(name) {
                     return Err(ErrorKind::GroupNameAlreadyInUse(
                         name.to_owned(),
@@ -403,7 +403,7 @@ where
             }
         }
 
-        for (_, e) in &mut kdflist.keys {
+        for e in kdflist.keys.values_mut() {
             if let Some(mut key_chain) = try_derive_key_single(passphrase, e) {
                 root_key.chain(&key_chain);
                 for name in names.clone() {
@@ -412,7 +412,7 @@ where
                         .keys
                         .insert(name.to_owned(), InternalKey::generate_new());
                 }
-                reassoc_keys(e, &mut key_chain);
+                reassoc_keys(e, &key_chain);
                 return Ok(());
             }
         }
@@ -443,7 +443,7 @@ where
             .ok_or_else(|| ErrorKind::PassphraseNotInKdfList)?;
         root_key.chain(&src_chain);
 
-        for (_, e) in &mut kdflist.keys {
+        for e in kdflist.keys.values_mut() {
             if let Some(mut key_chain) =
                 try_derive_key_single(dst_passphrase, e)
             {
@@ -461,7 +461,7 @@ where
                         .keys
                         .insert(name.to_owned(), src_chain.key(name)?.clone());
                 }
-                reassoc_keys(e, &mut key_chain);
+                reassoc_keys(e, &key_chain);
                 return Ok(());
             }
         }
@@ -977,7 +977,7 @@ mod test {
 
         let mk = derive_key_chain(&storage, b"hunter2").unwrap();
 
-        del_key(&storage, "original", || Ok((&b"hunter3"[..]).to_owned()))
+        del_key(&storage, "original", || Ok(b"hunter3"[..].to_owned()))
             .unwrap();
 
         let mk2 = derive_key_chain(&storage, b"hunter3").unwrap();
@@ -1167,7 +1167,7 @@ mod test {
         )
         .unwrap();
         disassoc_group(&storage, "original", ["group", "root"].iter(), || {
-            Ok((&b"hunter3"[..]).to_owned())
+            Ok(b"hunter3"[..].to_owned())
         })
         .unwrap();
 
@@ -1212,7 +1212,7 @@ mod test {
             .unwrap();
         add_key(&storage, b"hunter2", b"hunter3", "second", no_prompt).unwrap();
         destroy_group(&storage, ["group"].iter(), || {
-            Ok((&b"hunter2"[..]).to_owned())
+            Ok(b"hunter2"[..].to_owned())
         })
         .unwrap();
 

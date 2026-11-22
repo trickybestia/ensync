@@ -931,12 +931,12 @@ fn main_impl() -> Result<()> {
         let mut args = env::args().fuse();
         // If invoked as the login shell, go to a special server-only
         // code-path.
-        if args.next().map_or(false, |arg0| arg0.starts_with("-")) {
+        if args.next().is_some_and(|arg0| arg0.starts_with("-")) {
             return cli::cmd_server::shell();
         }
         // If the second argument is `-c`, assume we're being run as the shell
         // by ssh.
-        if args.next().map_or(false, |arg1| "-c" == &arg1) {
+        if args.next().is_some_and(|arg1| "-c" == &arg1) {
             return cli::cmd_server::shell();
         }
     }
@@ -1117,7 +1117,7 @@ fn main_impl() -> Result<()> {
                     &sc.spin,
                     sc.include_ancestors,
                     sc.dry_run,
-                    sc.watch.then(|| sc.quiescence),
+                    sc.watch.then_some(sc.quiescence),
                     num_threads,
                     &sc.strategy,
                     sc.override_mode,

@@ -70,11 +70,11 @@ pub fn list_keys(storage: &dyn Storage) -> Result<()> {
         for group in &key.groups {
             print!(" {}", group);
         }
-        println!("");
+        println!();
         println!("  algorithm:    {}", key.algorithm);
         println!("  created:      {}", format_date(Some(&key.created)));
         println!("  last changed: {}", format_date(key.updated.as_ref()));
-        println!("");
+        println!();
     }
     Ok(())
 }

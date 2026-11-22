@@ -20,10 +20,6 @@ use std::error::Error as StdError;
 use std::ffi;
 use std::io;
 
-use fourleaf;
-use sqlite;
-use tempfile;
-
 use crate::defs::{DisplayHash, HashId};
 use crate::log;
 use crate::server;

@@ -63,11 +63,11 @@ impl<T> UnqueuedTasks<T> {
     pub fn put(&self, task: T) -> usize {
         let mut lock = self.0.lock().unwrap();
         while lock.tasks.contains_key(&lock.next_id.0) {
-            lock.next_id = lock.next_id + Wrapping(1);
+            lock.next_id += Wrapping(1);
         }
 
         let id = lock.next_id.0;
-        lock.next_id = lock.next_id + Wrapping(1);
+        lock.next_id += Wrapping(1);
         lock.tasks.insert(id, task);
         id
     }

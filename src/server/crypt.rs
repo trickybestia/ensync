@@ -28,12 +28,12 @@
 //! reasons:
 //!
 //! - Clients always need to be able to re-read the directories they write.
-//! Permitting the "write-but-not-read" model would thus require using
-//! different keys for directories and files.
+//!   Permitting the "write-but-not-read" model would thus require using
+//!   different keys for directories and files.
 //!
 //! - Using GPG for encryption would result in a proliferation of the master
-//! key(s). There would be no easy way to change what keys had access to the
-//! server store.
+//!   key(s). There would be no easy way to change what keys had access to the
+//!   server store.
 //!
 //! - GPG is pretty slow at handling very large numbers of very small items.
 //!
@@ -91,13 +91,13 @@
 //! - For each key in the key store:
 //!
 //! - Apply Scrypt (or whatever algorithms we add in the future) to the
-//! passphrase with the stored parameters. Ignore entries not supported.
+//!   passphrase with the stored parameters. Ignore entries not supported.
 //!
 //! - Hash the derived key. If it does not match the stored hash, move to the
-//! next entry.
+//!   next entry.
 //!
 //! - For each internal key bound to the entry, take the HMAC of the internal
-//! key name and the derived key, then XOR it with the internal key diff.
+//!   key name and the derived key, then XOR it with the internal key diff.
 //!
 //! Note that the keys here are actually 256 bits wide, twice the size of an
 //! AES key. We thus actually have *two* independent internal keys. The first
@@ -137,10 +137,10 @@
 //! play with access control. What we need to guarantee is:
 //!
 //! - If you write an object to the server, you can be sure that all other
-//! clients that do the same thing would use the same key.
+//!   clients that do the same thing would use the same key.
 //!
 //! - If you can read a directory referencing an object, you can reference that
-//! object.
+//!   object.
 //!
 //! The solution is to derive the from the object content and the `everyone`
 //! internal key. Specifically:
@@ -148,12 +148,12 @@
 //! - Object HMACs always use the HMAC secret of the `everyone` internal key.
 //!
 //! - Use the first 16 bytes of the object id as the AES key, and the second 16
-//! bytes as the IV.
+//!   bytes as the IV.
 //!
 //! - Encrypt the object data in CBC mode using the that key and IV.
 //!
 //! - Pass object ids through SHA-3 before passing them to the server so that
-//! the server cannot derive the encryption keys.
+//!   the server cannot derive the encryption keys.
 //!
 //! For writers, this system is easy. For readers, there's the conundrum that
 //! they don't know the object content, and so cannot determine the key to
@@ -178,7 +178,7 @@
 //! - Pad it with 24 zero bytes (to make it the size of a `HashId`).
 //!
 //! - Encrypt it with AES in CBC mode using the `everyone` directory key and an
-//! IV equal to the two halves of the directory id XORed with each other.
+//!   IV equal to the two halves of the directory id XORed with each other.
 //!
 //! Encrypting the integers this way obfuscates how often a directory is
 //! usually updated. It does not alone prevent tampering since an attacker
@@ -229,16 +229,15 @@ use crate::rust_crypto::{aes, blockmodes, scrypt};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use fourleaf::adapt::Copied;
 use fourleaf::{self, UnknownFields};
-use rand::{rngs::OsRng, Rng};
-use tiny_keccak;
+use rand::{Rng, rngs::OsRng};
 
 use crate::defs::{HashId, UNKNOWN_HASH};
 use crate::errors::*;
 
-const SCRYPT_18_14_12_8_1: &'static str = "scrypt-18/14/12-8-1";
+const SCRYPT_18_14_12_8_1: &str = "scrypt-18/14/12-8-1";
 pub const BLKSZ: usize = 16;
-pub const GROUP_EVERYONE: &'static str = "everyone";
-pub const GROUP_ROOT: &'static str = "root";
+pub const GROUP_EVERYONE: &str = "everyone";
+pub const GROUP_ROOT: &str = "root";
 
 /// Stored in cleartext fourleaf as directory `[0u8;32]`.
 ///
@@ -254,7 +253,7 @@ fourleaf_retrofit!(struct KdfList : {} {} {
     |_context, this|
     [1] keys: BTreeMap<String, KdfEntry> = &this.keys,
     (?) unknown: Copied<UnknownFields<'static>> = &this.unknown,
-    { Ok(KdfList { keys: keys, unknown: unknown.0 }) }
+    { Ok(KdfList { keys, unknown: unknown.0 }) }
 });
 
 /// A single passphrase which may be used to derive internal keys
@@ -306,8 +305,8 @@ fourleaf_retrofit!(struct KdfEntry : {} {} {
     (?) unknown: Copied<UnknownFields<'static>> = &this.unknown,
     { Ok(KdfEntry { created: created.0,
                     updated: updated.map(|v| v.0),
-                    algorithm: algorithm, salt: salt, hash: hash,
-                    groups: groups,
+                    algorithm, salt, hash,
+                    groups,
                     unknown: unknown.0 }) }
 });
 
@@ -339,7 +338,7 @@ impl KeyChain {
         keys.insert(GROUP_EVERYONE.to_owned(), InternalKey::generate_new());
 
         KeyChain {
-            keys: keys,
+            keys,
             derived: InternalKey(UNKNOWN_HASH),
         }
     }
@@ -437,9 +436,9 @@ fn scrypt_18_14_12_8_1(passphrase: &[u8], salt: &[u8]) -> HashId {
     };
     let sparms = scrypt::ScryptParams::new(n, R, 1);
     let mut derived: HashId = Default::default();
-    scrypt::scrypt(passphrase, &salt, &sparms, &mut derived);
+    scrypt::scrypt(passphrase, salt, &sparms, &mut derived);
 
-    return derived;
+    derived
 }
 
 fn sha3(data: &[u8]) -> HashId {
@@ -492,10 +491,10 @@ pub fn create_key(
     chain.derived = InternalKey(derived);
 
     let mut entry = KdfEntry {
-        created: created,
-        updated: updated,
+        created,
+        updated,
         algorithm: algorithm.to_owned(),
-        salt: salt,
+        salt,
         hash: sha3(&derived),
         groups: BTreeMap::new(),
         unknown: UnknownFields::default(),
@@ -538,7 +537,7 @@ pub fn try_derive_key_single(
             }
 
             Some(KeyChain {
-                keys: keys,
+                keys,
                 derived: InternalKey(derived),
             })
         } else {
@@ -555,8 +554,8 @@ pub fn try_derive_key(
     passphrase: &[u8],
     keys: &BTreeMap<String, KdfEntry>,
 ) -> Option<KeyChain> {
-    keys.iter()
-        .filter_map(|(_, k)| try_derive_key_single(passphrase, k))
+    keys.values()
+        .filter_map(|k| try_derive_key_single(passphrase, k))
         .next()
 }
 
@@ -639,7 +638,7 @@ fn crypt_stream<W: Write, R: Read, C: Cryptor>(
         // the block size or EOF has been reached.
         let dst_len = {
             let mut dstrbuf = RefWriteBuffer::new(&mut dst_buf);
-            let mut srcrbuf = RefReadBuffer::new(&mut src_buf[..nread]);
+            let mut srcrbuf = RefReadBuffer::new(&src_buf[..nread]);
             match crypt.crypt(&mut dstrbuf, &mut srcrbuf, eof) {
                 Ok(_) => {
                     assert!(srcrbuf.is_empty());
@@ -853,8 +852,8 @@ pub fn encrypt_dir_ver(dir: &HashId, mut ver: u64, key: &KeyChain) -> HashId {
         .expect("Key chain does not have `everyone` group");
 
     let mut cleartext = HashId::default();
-    for ix in 0..8 {
-        cleartext[ix] = (ver & 0xFF) as u8;
+    for byte in cleartext.iter_mut().take(8) {
+        *byte = (ver & 0xFF) as u8;
         ver >>= 8;
     }
 
@@ -905,8 +904,8 @@ pub fn decrypt_dir_ver(
     }
 
     let mut ver = 0u64;
-    for ix in 0..8 {
-        ver |= (cleartext[ix] as u64) << (ix * 8);
+    for (ix, &byte) in cleartext.iter().take(8).enumerate() {
+        ver |= (byte as u64) << (ix * 8);
     }
 
     ver

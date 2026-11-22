@@ -79,24 +79,24 @@ pub struct DirHandle(Arc<DirContent>);
 
 impl ReplicaDirectory for DirHandle {
     fn full_path(&self) -> &OsStr {
-        &self.0.path.as_os_str()
+        self.0.path.as_os_str()
     }
 }
 
 fn kc_update_mode(kc: &mut Keccak, mode: FileMode) {
-    let m = mode as u32;
+    let m = mode;
     kc.update(&[m as u8, (m >> 8) as u8, (m >> 16) as u8, (m >> 24) as u8])
 }
 
-static NUL: &'static [u8] = &[0u8];
+static NUL: &[u8] = &[0u8];
 const INIT_HASH: HashId = [0; 32];
 
 impl DirHandle {
     pub fn root(path: PathBuf, dev: u64) -> Self {
         DirHandle(Arc::new(DirContent {
-            path: path,
+            path,
             name: OsString::new(),
-            dev: dev,
+            dev,
             parent: None,
             mcontent: Mutex::new(DirContentMut {
                 synth_mode: None,
@@ -114,7 +114,7 @@ impl DirHandle {
         DirHandle(Arc::new(DirContent {
             path: self.child(name),
             name: name.to_owned(),
-            dev: dev,
+            dev,
             parent: Some(self.clone()),
             mcontent: Mutex::new(DirContentMut {
                 synth_mode: synth,
@@ -159,7 +159,7 @@ impl DirHandle {
 
     pub fn full_path_with_trailing_slash(&self) -> OsString {
         let mut s = self.0.path.as_os_str().to_owned();
-        if OsStr::new("/") != &s {
+        if OsStr::new("/") != s {
             s.push("/");
         }
         s

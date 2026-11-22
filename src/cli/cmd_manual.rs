@@ -48,7 +48,7 @@ pub fn ls<S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
         }
         ls_one(replica, path, human_readable)?;
         if show_headers {
-            println!("");
+            println!();
         }
     }
     Ok(())
@@ -69,7 +69,7 @@ fn ls_one<S: Storage + ?Sized, P: AsRef<Path>>(
     let mut found = false;
 
     for (name, fd) in list {
-        if single.as_ref().map_or(false, |s| *s != name) {
+        if single.as_ref().is_some_and(|s| *s != name) {
             continue;
         }
         found = true;
@@ -96,11 +96,7 @@ fn ls_one<S: Storage + ?Sized, P: AsRef<Path>>(
         };
 
         fn bit(mode: FileMode, bit: FileMode, ch: char) -> char {
-            if bit == (mode & bit) {
-                ch
-            } else {
-                '-'
-            }
+            if bit == (mode & bit) { ch } else { '-' }
         }
         fn twobit(
             mode: FileMode,
@@ -147,7 +143,7 @@ fn ls_one<S: Storage + ?Sized, P: AsRef<Path>>(
             time,
             name.to_string_lossy(),
             if target.is_some() { " -> " } else { "" },
-            target.as_ref().map_or("", |s| &*s)
+            target.as_ref().map_or("", |s| s)
         );
     }
 
@@ -158,7 +154,7 @@ fn ls_one<S: Storage + ?Sized, P: AsRef<Path>>(
     Ok(())
 }
 
-pub fn mkdir<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
+pub fn mkdir<S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     replica: &ServerReplica<S>,
     paths: IT,
     mode: FileMode,
@@ -179,7 +175,7 @@ pub fn mkdir<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     Ok(())
 }
 
-pub fn rmdir<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
+pub fn rmdir<S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     replica: &ServerReplica<S>,
     paths: IT,
 ) -> Result<()> {
@@ -194,7 +190,7 @@ pub fn rmdir<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     Ok(())
 }
 
-pub fn cat<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
+pub fn cat<S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     replica: &ServerReplica<S>,
     paths: IT,
 ) -> Result<()> {
@@ -212,7 +208,7 @@ pub fn cat<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
             .list(&mut dir)
             .chain_err(|| format!("Error listing '{}'", parent.display()))?
             .into_iter()
-            .filter(|&(ref name, _)| name == filename)
+            .filter(|(name, _)| name == filename)
             .map(|(_, fd)| fd)
             .next()
             .ok_or_else(|| format!("'{}' does not exist", path.display()))?;
@@ -254,10 +250,10 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
 
     // If `dst` is a directory, copy to a child of that directory with the same
     // name as `src` unless `src` has no name, in which case simply use `dst`.
-    if dst.is_dir() {
-        if let Some(name) = name {
-            dst.push(name);
-        }
+    if dst.is_dir()
+        && let Some(name) = name
+    {
+        dst.push(name);
     }
 
     get_impl(
@@ -286,7 +282,7 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
         let mut found = false;
 
         for (name, fd) in list {
-            if single.as_ref().map_or(false, |n| name != *n) {
+            if single.as_ref().is_some_and(|n| name != *n) {
                 continue;
             }
             found = true;
@@ -306,10 +302,9 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
                 FileData::Regular(mode, _, time, _) => {
                     let mut tmpfile =
                         NamedTempFile::new_in(tmpdir).chain_err(|| {
-                            format!(
-                                "Failed to create \
+                            "Failed to create \
                                                temporary file"
-                            )
+                                .to_string()
                         })?;
 
                     fs::set_permissions(
@@ -351,12 +346,14 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
                         format!("Error transferring '{}'", sub_src.display())
                     })?;
 
-                    posix::set_mtime(tmpfile.as_file(), time).chain_err(|| {
-                        format!(
-                            "Failed to set mtime on '{}'",
-                            sub_dst.display()
-                        )
-                    })?;
+                    posix::set_mtime(tmpfile.as_file(), time).chain_err(
+                        || {
+                            format!(
+                                "Failed to set mtime on '{}'",
+                                sub_dst.display()
+                            )
+                        },
+                    )?;
 
                     if allow_overwrite {
                         tmpfile.persist(&sub_dst)
@@ -424,11 +421,11 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
             }
         }
 
-        if !found && single.is_some() {
+        if !found && let Some(single) = single {
             return Err(format!(
                 "{}/{}: File not found",
                 dir.full_path().to_string_lossy(),
-                single.unwrap().to_string_lossy()
+                single.to_string_lossy()
             )
             .into());
         }
@@ -482,14 +479,15 @@ pub fn put<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
         }
 
         let existing = existing.get(&name);
-        if let Some(existing) = existing {
-            if !existing.is_dir() && !allow_overwrite {
-                return Err(format!(
-                    "Not overwriting '{}': Already exists",
-                    dst.display()
-                )
-                .into());
-            }
+        if let Some(existing) = existing
+            && !existing.is_dir()
+            && !allow_overwrite
+        {
+            return Err(format!(
+                "Not overwriting '{}': Already exists",
+                dst.display()
+            )
+            .into());
         }
 
         let md = fs::symlink_metadata(src).chain_err(|| {
@@ -508,11 +506,11 @@ pub fn put<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
             })?;
 
             let mut subdir = replica
-                .chdir(&dir, &name)
+                .chdir(dir, &name)
                 .chain_err(|| format!("Failed to enter '{}'", dst.display()))?;
             let sub_existing = map_of(replica, &mut subdir)?;
 
-            let dirit = fs::read_dir(&src).chain_err(|| {
+            let dirit = fs::read_dir(src).chain_err(|| {
                 format!("Failed to list contents of '{}'", src.display())
             })?;
 
@@ -613,7 +611,7 @@ pub fn put<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
     Ok(())
 }
 
-pub fn rm<'a, S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
+pub fn rm<S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     replica: &ServerReplica<S>,
     paths: IT,
     recursive: bool,
@@ -670,7 +668,7 @@ fn rm_one<S: Storage + ?Sized, P: AsRef<Path>>(
                 )
             })?
             .into_iter()
-            .filter(|&(ref n, _)| *n == name)
+            .filter(|(n, _)| *n == name)
             .map(|(_, fd)| fd)
             .next()
             .ok_or_else(|| {
@@ -791,7 +789,7 @@ fn navigate<S: Storage + ?Sized, P: AsRef<Path>>(
                         dir.full_path().to_string_lossy(),
                         component.to_string_lossy()
                     )
-                })
+                });
             }
         }
     }

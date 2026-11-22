@@ -20,6 +20,7 @@ use crate::defs::HashId;
 use crate::errors::Result;
 
 pub type Tx = u64;
+pub type WatchCallback = Box<dyn FnMut(Option<&HashId>) + Send>;
 
 /// Defines the underlying storage model for the server.
 ///
@@ -27,19 +28,19 @@ pub type Tx = u64;
 /// server recognises only two types of objects:
 ///
 /// - "Directories", which are identified by surrogate random ids. These hold
-/// all the information needed for `Replica::list`. The server permits fetching
-/// a prefix from every directory, and appending new bytes to the end of the
-/// directory. Concurrent modifications on a directory are handled by testing
-/// the length of the directory as well as a "version id" regenerated each time
-/// the directory is rewritten. Note that the version id has additional
-/// semantics at the higher layer to detect revert attacks. There is also a
-/// "secret version id" which is specified when the directory is created; write
-/// operations to a directory specify the secret version, whereas read
-/// operations only return the normal version.
+///   all the information needed for `Replica::list`. The server permits fetching
+///   a prefix from every directory, and appending new bytes to the end of the
+///   directory. Concurrent modifications on a directory are handled by testing
+///   the length of the directory as well as a "version id" regenerated each time
+///   the directory is rewritten. Note that the version id has additional
+///   semantics at the higher layer to detect revert attacks. There is also a
+///   "secret version id" which is specified when the directory is created; write
+///   operations to a directory specify the secret version, whereas read
+///   operations only return the normal version.
 ///
 /// - "Objects", which hold blocks produced by `block_xfer`, identified by
-/// HMAC. The server has no way to determine itself whether a block is in use;
-/// instead, the client works with the server to maintain a reference count.
+///   HMAC. The server has no way to determine itself whether a block is in use;
+///   instead, the client works with the server to maintain a reference count.
 pub trait Storage: Send + Sync {
     /// Returns whether the storage system is in a fatal state.
     fn is_fatal(&self) -> bool {
@@ -196,10 +197,7 @@ pub trait Storage: Send + Sync {
     ///
     /// The watch function may be called without a hashid if a fatal error
     /// occurred while waiting for changes.
-    fn watch(
-        &mut self,
-        f: Box<dyn FnMut(Option<&HashId>) + Send>,
-    ) -> Result<()>;
+    fn watch(&mut self, f: WatchCallback) -> Result<()>;
     /// If `watch()` has been called, add the given directory id to the watch
     /// list.
     fn watchdir(&self, dir: &HashId, ver: &HashId, len: u32) -> Result<()>;

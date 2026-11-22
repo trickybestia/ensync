@@ -276,19 +276,10 @@ pub trait Condemn: Replica {
     fn uncondemn(&self, dir: &mut Self::Directory, file: &OsStr) -> Result<()>;
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 struct WatchStatus {
     dirty: bool,
     context_lost: bool,
-}
-
-impl Default for WatchStatus {
-    fn default() -> WatchStatus {
-        WatchStatus {
-            dirty: false,
-            context_lost: false,
-        }
-    }
 }
 
 /// Handle passed to `Replica::watch` to allow notifying higher-level code

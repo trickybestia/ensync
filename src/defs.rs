@@ -32,10 +32,10 @@ pub type HashId = [u8; 32];
 pub const UNKNOWN_HASH: HashId = [0; 32];
 /// The name of the directory which is a sibling to the configuration and which
 /// is the root of Ensync's private data.
-pub const PRIVATE_DIR_NAME: &'static str = "internal.ensync";
+pub const PRIVATE_DIR_NAME: &str = "internal.ensync";
 /// Prefix of invasive temporary files (i.e., those created implicitly by the
 /// sync process).
-pub const INVASIVE_TMP_PREFIX: &'static str = "ensync_tmp_";
+pub const INVASIVE_TMP_PREFIX: &str = "ensync_tmp_";
 
 /// Wraps a `HashId` to display it in hexadecimal format.
 #[derive(Clone, Copy)]
@@ -126,10 +126,7 @@ impl FileData {
 
     /// Returns whether this `FileData` is a directory.
     pub fn is_dir(&self) -> bool {
-        match *self {
-            FileData::Directory(_) => true,
-            _ => false,
-        }
+        matches!(*self, FileData::Directory(_))
     }
 
     /// Returns whether both `self` and `other` are regular files and `self`'s
@@ -157,7 +154,7 @@ impl FileData {
             (&Regular(m1, _, t1, ref h1), &Regular(m2, _, t2, ref h2)) => {
                 m1 == m2 && t1 == t2 && *h1 == *h2
             }
-            (&Symlink(ref t1), &Symlink(ref t2)) => *t1 == *t2,
+            (Symlink(t1), Symlink(t2)) => *t1 == *t2,
             (&Special, &Special) => true,
             _ => false,
         }
@@ -172,7 +169,7 @@ impl FileData {
             (&Regular(m1, _, _, ref h1), &Regular(m2, _, _, ref h2)) => {
                 m1 == m2 && *h1 == *h2
             }
-            (&Symlink(ref t1), &Symlink(ref t2)) => *t1 == *t2,
+            (Symlink(t1), Symlink(t2)) => *t1 == *t2,
             (&Special, &Special) => true,
             _ => false,
         }
@@ -185,10 +182,8 @@ impl FileData {
 
         match (self, that) {
             (&Directory(_), &Directory(_)) => true,
-            (&Regular(_, _, _, ref h1), &Regular(_, _, _, ref h2)) => {
-                *h1 == *h2
-            }
-            (&Symlink(ref t1), &Symlink(ref t2)) => *t1 == *t2,
+            (Regular(_, _, _, h1), Regular(_, _, _, h2)) => *h1 == *h2,
+            (Symlink(t1), Symlink(t2)) => *t1 == *t2,
             (&Special, &Special) => true,
             _ => false,
         }
@@ -200,10 +195,7 @@ impl FileData {
 pub struct File<'a>(pub &'a OsStr, pub &'a FileData);
 
 pub fn is_dir(fd: Option<&FileData>) -> bool {
-    match fd {
-        Some(&FileData::Directory(_)) => true,
-        _ => false,
-    }
+    matches!(fd, Some(&FileData::Directory(_)))
 }
 
 #[cfg(test)]

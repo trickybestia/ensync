@@ -18,16 +18,11 @@
 
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
-use std::mem;
 use std::path::Path;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
-use std::u32;
 
-use flate2;
-use sqlite;
-
-use super::crypt::{encrypt_dir_ver, KeyChain};
+use super::crypt::{KeyChain, encrypt_dir_ver};
 use super::dir::*;
 use super::storage::*;
 use crate::block_xfer::*;
@@ -91,9 +86,9 @@ impl<S: Storage + ?Sized + 'static> ServerReplica<S> {
         )?);
 
         Ok(ServerReplica {
-            db: db,
+            db,
             key: key.clone(),
-            pseudo_root: pseudo_root,
+            pseudo_root,
             root_name: root_name.to_owned().into(),
             watcher: None,
         })
@@ -314,7 +309,7 @@ impl<S: Storage + ?Sized + 'static> Replica for ServerReplica<S> {
         let dir_filter = if let (true, Some(ws)) =
             (typ <= PrepareType::Watched, self.watcher.as_ref())
         {
-            Some(mem::replace(&mut ws.lock().unwrap().dirty, HashSet::new()))
+            Some(std::mem::take(&mut ws.lock().unwrap().dirty))
         } else {
             None
         };
@@ -344,7 +339,7 @@ impl<S: Storage + ?Sized + 'static> Replica for ServerReplica<S> {
         }
 
         self.storage().for_dirty_dir(&mut |id| {
-            if dir_filter.as_ref().map_or(false, |d| !d.contains(id)) {
+            if dir_filter.as_ref().is_some_and(|d| !d.contains(id)) {
                 return Ok(());
             }
 
@@ -472,10 +467,12 @@ mod test {
     macro_rules! assert_list_none {
         ($replica:expr_2021, $root:expr_2021) => {
             assert!($replica.list(&mut $root).unwrap().is_empty());
-            assert!($replica
-                .list(&mut $replica.root().unwrap())
-                .unwrap()
-                .is_empty());
+            assert!(
+                $replica
+                    .list(&mut $replica.root().unwrap())
+                    .unwrap()
+                    .is_empty()
+            );
         };
     }
 
@@ -1256,13 +1253,15 @@ mod test {
 
         let mut subone =
             replica.synthdir(&mut root, &oss("one.ensync[invalid]"), 0o700);
-        assert!(replica
-            .create(
-                &mut subone,
-                File(&oss("dir"), &FileData::Directory(0o700)),
-                None
-            )
-            .is_err());
+        assert!(
+            replica
+                .create(
+                    &mut subone,
+                    File(&oss("dir"), &FileData::Directory(0o700)),
+                    None
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -1291,13 +1290,15 @@ mod test {
         macro_rules! test {
             ($key_chain:expr_2021, $xfer:expr_2021, $which:ident) => {{
                 let mut actual_data: Vec<u8> = Vec::new();
-                assert!(block_xfer::blocks_to_stream(
-                    &xfer.blocks,
-                    &mut actual_data,
-                    key_chain.obj_hmac_secret().unwrap(),
-                    |h| xfer.fetch.fetch(h)
-                )
-                .$which());
+                assert!(
+                    block_xfer::blocks_to_stream(
+                        &xfer.blocks,
+                        &mut actual_data,
+                        key_chain.obj_hmac_secret().unwrap(),
+                        |h| xfer.fetch.fetch(h)
+                    )
+                    .$which()
+                );
             }};
         }
 
@@ -1687,13 +1688,15 @@ mod test {
             // directory" built in to Rust or as a crate. Instead of
             // implementing one here, and since we don't work on non-UNIX right
             // now anyway, just shell out to `cp` for the time being.
-            assert!(Command::new("cp")
-                .arg("-a")
-                .arg(&storage_dir)
-                .arg(&copy_dir)
-                .status()
-                .unwrap()
-                .success());
+            assert!(
+                Command::new("cp")
+                    .arg("-a")
+                    .arg(&storage_dir)
+                    .arg(&copy_dir)
+                    .status()
+                    .unwrap()
+                    .success()
+            );
 
             replica
                 .update(&mut root, &oss("sym"), &sym1, &sym2, None)
@@ -1918,13 +1921,15 @@ mod test {
             let list = replica.list(&mut subdir).unwrap();
             assert_eq!(1, list.len());
 
-            assert!(replica
-                .create(
-                    &mut subdir,
-                    File(&oss("newdir"), &FileData::Directory(0o600)),
-                    None
-                )
-                .is_err());
+            assert!(
+                replica
+                    .create(
+                        &mut subdir,
+                        File(&oss("newdir"), &FileData::Directory(0o600)),
+                        None
+                    )
+                    .is_err()
+            );
         }
     }
 
@@ -1939,9 +1944,15 @@ mod test {
                 None,
             )
             .unwrap();
-        assert!(replica
-            .rename(&mut root, &oss("subdir"), &oss("subdir.ensync[r=root]"))
-            .is_err());
+        assert!(
+            replica
+                .rename(
+                    &mut root,
+                    &oss("subdir"),
+                    &oss("subdir.ensync[r=root]")
+                )
+                .is_err()
+        );
     }
 
     #[test]

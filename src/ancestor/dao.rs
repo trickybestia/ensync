@@ -292,7 +292,7 @@ impl Dao {
     /// and parent already exists, returns None.
     pub fn create(&self, e: &FileEntry) -> Result<Option<i64>> {
         tx(&self.0, || {
-            if self.exists(e.parent, &*e.name)? {
+            if self.exists(e.parent, &e.name)? {
                 Ok(None)
             } else {
                 self.0
@@ -308,7 +308,7 @@ impl Dao {
                     .binding(5, e.mtime)
                     .binding(6, &*e.content)
                     .run()?;
-                Ok(self.get_id_of(e.parent, &*e.name)?)
+                Ok(self.get_id_of(e.parent, &e.name)?)
             }
         })
     }
@@ -338,7 +338,7 @@ impl Dao {
                     .binding(5, &*new.content)
                     .run()?;
                 Ok(UpdateStatus::Ok)
-            } else if self.exists(old.parent, &*old.name)? {
+            } else if self.exists(old.parent, &old.name)? {
                 Ok(UpdateStatus::NotMatched)
             } else {
                 Ok(UpdateStatus::NotFound)
@@ -356,7 +356,7 @@ impl Dao {
         tx(&self.0, || {
             if let Some(id) = self.get_matching(e)? {
                 self.delete_raw_impl(id)
-            } else if self.exists(e.parent, &*e.name)? {
+            } else if self.exists(e.parent, &e.name)? {
                 Ok(DeleteStatus::NotMatched)
             } else {
                 Ok(DeleteStatus::NotFound)
@@ -454,8 +454,8 @@ mod test {
     fn create_and_list_item() {
         let dao = mkdao();
 
-        assert!(dao
-            .create(&FileEntry {
+        assert!(
+            dao.create(&FileEntry {
                 id: -1,
                 parent: 0,
                 name: Cow::Borrowed(b"foo"),
@@ -465,7 +465,8 @@ mod test {
                 content: Cow::Borrowed(b"baz"),
             })
             .unwrap()
-            .is_some());
+            .is_some()
+        );
 
         let mut listed = Vec::new();
         assert!(dao.list(true, 0, |e| listed.push(e)).unwrap());
@@ -481,8 +482,8 @@ mod test {
         assert_eq!(b"baz", &*e.content);
 
         // Test again with a subdir so we're sure parent is stored correctly
-        assert!(dao
-            .create(&FileEntry {
+        assert!(
+            dao.create(&FileEntry {
                 id: -1,
                 parent: e.id,
                 // Same name in case it somehow collides
@@ -493,7 +494,8 @@ mod test {
                 content: Cow::Borrowed(b"xyzzy"),
             })
             .unwrap()
-            .is_some());
+            .is_some()
+        );
 
         let mut listed = Vec::new();
         assert!(dao.list(true, e.id, |s| listed.push(s)).unwrap());
@@ -529,11 +531,11 @@ mod test {
     ) -> FileEntry<'static> {
         FileEntry {
             id: -1,
-            parent: parent,
+            parent,
             name: Cow::Borrowed(name),
             typ: 0,
-            mode: mode,
-            mtime: mtime,
+            mode,
+            mtime,
             content: Cow::Borrowed(b""),
         }
     }

@@ -45,17 +45,17 @@ pub struct ImplementationInfo {
     /// - The client sends the greatest (major,minor) version it supports.
     ///
     /// - If `major` is older than the oldest version the server supports, it
-    /// returns `FatalError` indicating the problem and terminates.
+    ///   returns `FatalError` indicating the problem and terminates.
     ///
     /// - If `major` is a protocol version the server supports, it responds
-    /// with that major version and the latest minor version of that major
-    /// version it supports.
+    ///   with that major version and the latest minor version of that major
+    ///   version it supports.
     ///
     /// - If `major` is later than anything the server supports, it responds
-    /// with the greatest (major,minor) version it supports.
+    ///   with the greatest (major,minor) version it supports.
     ///
     /// - The client fails if it does not support the major version sent back
-    /// by the server.
+    ///   by the server.
     ///
     /// A major version difference in the protocol indicates a change that both
     /// sides must be aware of. A minor version difference implies that the
@@ -71,8 +71,8 @@ fourleaf_retrofit!(struct ImplementationInfo : {} {} {
     [1] name: String = &this.name,
     [2] version: (u32, u32, u32) = this.version,
     [3] protocol: (u32, u32) = this.protocol,
-    { Ok(ImplementationInfo { name: name, version: version,
-                              protocol: protocol }) }
+    { Ok(ImplementationInfo { name, version,
+                              protocol }) }
 });
 
 impl ImplementationInfo {
@@ -239,7 +239,7 @@ fourleaf_retrofit!(enum Request : {} {} {
     |_context|
     [1] Request::ClientInfo { ref implementation } => {
         [1] implementation: ImplementationInfo = implementation,
-        { Ok(Request::ClientInfo { implementation: implementation }) }
+        { Ok(Request::ClientInfo { implementation }) }
     },
     [2] Request::GetDir(ref id) => {
         [1] id: HashId = id,
@@ -276,7 +276,7 @@ fourleaf_retrofit!(enum Request : {} {} {
         [3] ver: HashId = ver,
         [4] sver: HashId = sver,
         [5] data: Vec<u8> = data,
-        { Ok(Request::Mkdir { tx: tx, id: id, ver: ver, sver: sver, data: data }) }
+        { Ok(Request::Mkdir { tx, id, ver, sver, data }) }
     },
     [10] Request::Updir { tx, ref id, ref sver, old_len, ref append } => {
         [1] tx: Tx = tx,
@@ -284,34 +284,34 @@ fourleaf_retrofit!(enum Request : {} {} {
         [3] sver: HashId = sver,
         [4] old_len: u32 = old_len,
         [5] append: Vec<u8> = append,
-        { Ok(Request::Updir { tx: tx, id: id, sver: sver,
-                              old_len: old_len, append: append }) }
+        { Ok(Request::Updir { tx, id, sver,
+                              old_len, append }) }
     },
     [11] Request::Rmdir { tx, ref id, ref sver, old_len } => {
         [1] tx: Tx = tx,
         [2] id: HashId = id,
         [3] sver: HashId = sver,
         [4] old_len: u32 = old_len,
-        { Ok(Request::Rmdir { tx: tx, id: id, sver: sver, old_len: old_len }) }
+        { Ok(Request::Rmdir { tx, id, sver, old_len }) }
     },
     [12] Request::Linkobj { tx, ref id, ref linkid } => {
         [1] tx: Tx = tx,
         [2] id: HashId = id,
         [3] linkid: HashId = linkid,
-        { Ok(Request::Linkobj { tx: tx, id: id, linkid: linkid }) }
+        { Ok(Request::Linkobj { tx, id, linkid }) }
     },
     [13] Request::Putobj { tx, ref id, ref linkid, ref data } => {
         [1] tx: Tx = tx,
         [2] id: HashId = id,
         [3] linkid: HashId = linkid,
         [4] data: Vec<u8> = data,
-        { Ok(Request::Putobj { tx: tx, id: id, linkid: linkid, data: data }) }
+        { Ok(Request::Putobj { tx, id, linkid, data }) }
     },
     [14] Request::Unlinkobj { tx, ref id, ref linkid } => {
         [1] tx: Tx = tx,
         [2] id: HashId = id,
         [3] linkid: HashId = linkid,
-        { Ok(Request::Unlinkobj { tx: tx, id: id, linkid: linkid }) }
+        { Ok(Request::Unlinkobj { tx, id, linkid }) }
     },
     [15] Request::CleanUp => {
         { Ok(Request::CleanUp) }
@@ -323,7 +323,7 @@ fourleaf_retrofit!(enum Request : {} {} {
         [1] id: HashId = id,
         [2] ver: HashId = ver,
         [3] len: u32 = len,
-        { Ok(Request::Watchdir { id: id, ver: ver, len: len }) }
+        { Ok(Request::Watchdir { id, ver, len }) }
     },
 });
 
@@ -420,8 +420,8 @@ fourleaf_retrofit!(enum Response : {} {} {
     [9] Response::ServerInfo { ref implementation, ref motd } => {
         [1] implementation: ImplementationInfo = implementation,
         [2] motd: Option<String> = motd,
-        { Ok(Response::ServerInfo { implementation: implementation,
-                                    motd: motd }) }
+        { Ok(Response::ServerInfo { implementation,
+                                    motd }) }
     },
     [10] Response::WatchNotify(ref id) => {
         [1] id: HashId = id,
@@ -517,11 +517,7 @@ pub fn run_server_rpc<S: Storage, R: Read, W: Write + Send + 'static>(
                     .take()
                     .map(|e| Response::FatalError(e.to_string()))
                     .unwrap_or(response);
-                let fatal = if let Response::FatalError(_) = response {
-                    true
-                } else {
-                    false
-                };
+                let fatal = matches!(response, Response::FatalError(_));
                 write_response(&mut *sout.lock().unwrap(), response)?;
 
                 if fatal {
@@ -715,7 +711,7 @@ pub struct RemoteStorage {
     fatal: AtomicBool,
     /// The protocol version negotiated by the server.
     protocol: (u32, u32),
-    watch_fun: Arc<Mutex<Option<Box<dyn FnMut(Option<&HashId>) + Send>>>>,
+    watch_fun: Arc<Mutex<Option<WatchCallback>>>,
 }
 
 macro_rules! handle_response {
@@ -765,35 +761,36 @@ impl RemoteStorage {
         let mut sin = io::BufReader::new(sin);
         let (tx, rx) = mpsc::sync_channel(0);
 
-        let watch_fun: Arc<
-            Mutex<Option<Box<dyn FnMut(Option<&HashId>) + Send>>>,
-        > = Arc::new(Mutex::new(None));
+        let watch_fun: Arc<Mutex<Option<WatchCallback>>> =
+            Arc::new(Mutex::new(None));
         let watch_fun2 = watch_fun.clone();
 
-        thread::spawn(move || loop {
-            let resp = read_frame(&mut sin).and_then(|r| {
-                r.ok_or(ErrorKind::ServerConnectionClosed.into())
-            });
+        thread::spawn(move || {
+            loop {
+                let resp = read_frame(&mut sin).and_then(|r| {
+                    r.ok_or(ErrorKind::ServerConnectionClosed.into())
+                });
 
-            if let Err(ref err) = resp {
-                if err.is_fatal() {
+                if let Err(ref err) = resp
+                    && err.is_fatal()
+                {
                     let mut wf = watch_fun2.lock().unwrap();
                     if let Some(ref mut wf) = *wf {
                         wf(None);
                     }
                 }
-            }
 
-            match resp {
-                Ok(Response::WatchNotify(ref id)) => {
-                    let mut wf = watch_fun2.lock().unwrap();
-                    if let Some(ref mut wf) = *wf {
-                        wf(Some(id));
+                match resp {
+                    Ok(Response::WatchNotify(ref id)) => {
+                        let mut wf = watch_fun2.lock().unwrap();
+                        if let Some(ref mut wf) = *wf {
+                            wf(Some(id));
+                        }
                     }
-                }
-                _ => {
-                    if tx.send(resp).is_err() {
-                        break;
+                    _ => {
+                        if tx.send(resp).is_err() {
+                            break;
+                        }
                     }
                 }
             }
@@ -805,7 +802,7 @@ impl RemoteStorage {
             cond: Condvar::new(),
             fatal: AtomicBool::new(false),
             protocol: (0, 0),
-            watch_fun: watch_fun,
+            watch_fun,
         }
     }
 
@@ -853,7 +850,7 @@ impl RemoteStorage {
     }
 
     fn send_single_sync_request(&self, req: Request) -> Result<Response> {
-        self.send_sync_request(req, |r| recv(r))
+        self.send_sync_request(req, recv)
     }
 
     pub fn exchange_client_info(
@@ -897,7 +894,7 @@ impl Storage for RemoteStorage {
             Request::GetDir(*id)
         )) => {
             Response::DirData(v, data) =>
-                Ok(Some((v, data.into()))),
+                Ok(Some((v, data))),
             Response::NotFound => Ok(None),
         })
     }
@@ -906,7 +903,7 @@ impl Storage for RemoteStorage {
         handle_response!(self, tryf!(self, self.send_single_sync_request(
             Request::GetObj(*id)
         )) => {
-            Response::ObjData(data) => Ok(Some(data.into())),
+            Response::ObjData(data) => Ok(Some(data)),
             Response::NotFound => Ok(None),
         })
     }
@@ -976,7 +973,7 @@ impl Storage for RemoteStorage {
         data: &[u8],
     ) -> Result<()> {
         self.send_async_request(Request::Mkdir {
-            tx: tx,
+            tx,
             id: *id,
             ver: *v,
             sver: *sv,
@@ -993,10 +990,10 @@ impl Storage for RemoteStorage {
         data: &[u8],
     ) -> Result<()> {
         self.send_async_request(Request::Updir {
-            tx: tx,
+            tx,
             id: *id,
             sver: *sv,
-            old_len: old_len,
+            old_len,
             append: data.to_owned(),
         })
     }
@@ -1009,16 +1006,16 @@ impl Storage for RemoteStorage {
         old_len: u32,
     ) -> Result<()> {
         self.send_async_request(Request::Rmdir {
-            tx: tx,
+            tx,
             id: *id,
             sver: *sv,
-            old_len: old_len,
+            old_len,
         })
     }
 
     fn linkobj(&self, tx: Tx, id: &HashId, linkid: &HashId) -> Result<bool> {
         handle_response!(self, tryf!(self, self.send_single_sync_request(
-            Request::Linkobj { tx: tx, id: *id, linkid: *linkid }
+            Request::Linkobj { tx, id: *id, linkid: *linkid }
         )) => {
             Response::Done => Ok(true),
             Response::NotFound => Ok(false),
@@ -1033,7 +1030,7 @@ impl Storage for RemoteStorage {
         data: &[u8],
     ) -> Result<()> {
         self.send_async_request(Request::Putobj {
-            tx: tx,
+            tx,
             id: *id,
             linkid: *linkid,
             data: data.to_owned(),
@@ -1042,7 +1039,7 @@ impl Storage for RemoteStorage {
 
     fn unlinkobj(&self, tx: Tx, id: &HashId, linkid: &HashId) -> Result<()> {
         self.send_async_request(Request::Unlinkobj {
-            tx: tx,
+            tx,
             id: *id,
             linkid: *linkid,
         })
@@ -1077,7 +1074,7 @@ impl Storage for RemoteStorage {
         self.send_async_request(Request::Watchdir {
             id: *dir,
             ver: *ver,
-            len: len,
+            len,
         })
     }
 

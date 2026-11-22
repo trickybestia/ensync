@@ -119,7 +119,7 @@ impl<'a> From<&'a Entry> for FileData {
             &Entry::Regular(reg) => {
                 FileData::Regular(reg.mode, reg.size, reg.modified, reg.hash)
             }
-            &Entry::Symlink(ref target) => FileData::Symlink(target.clone()),
+            Entry::Symlink(target) => FileData::Symlink(target.clone()),
             &Entry::Special => FileData::Special,
         }
     }
@@ -144,16 +144,14 @@ impl Entry {
             &FileData::Regular(mode, size, modified, _) => {
                 let hash = xfer.ok_or(ErrorKind::MissingXfer)?;
                 Ok(Entry::Regular(Regular {
-                    mode: mode,
-                    size: size,
-                    modified: modified,
-                    hash: hash,
+                    mode,
+                    size,
+                    modified,
+                    hash,
                     content: hash,
                 }))
             }
-            &FileData::Symlink(ref target) => {
-                Ok(Entry::Symlink(target.clone()))
-            }
+            FileData::Symlink(target) => Ok(Entry::Symlink(target.clone())),
             &FileData::Special => Ok(Entry::Special),
         }
     }
@@ -236,7 +234,7 @@ pub fn catpath(a: &OsStr, b: &OsStr) -> OsString {
 impl MemoryReplica {
     /// Returns a guard providing mutable access to the data underlying the
     /// replica.
-    pub fn data(&self) -> MutexGuard<MemoryReplicaImpl> {
+    pub fn data(&self) -> MutexGuard<'_, MemoryReplicaImpl> {
         self.data.lock().unwrap()
     }
 
@@ -266,7 +264,7 @@ impl MemoryReplica {
     pub fn set_hashes_unknown(&self, dir: &mut DirHandle) {
         let mut d = self.data();
         let contents = d.dirs.get_mut(&dir.path).unwrap();
-        for (_, val) in &mut contents.contents {
+        for val in contents.contents.values_mut() {
             if let &mut Entry::Regular(Regular { ref mut hash, .. }) = val {
                 *hash = UNKNOWN_HASH;
             }
@@ -275,7 +273,7 @@ impl MemoryReplica {
 
     pub fn mark_all_dirty(&self) {
         let mut d = self.data();
-        for (_, dir) in &mut d.dirs {
+        for dir in d.dirs.values_mut() {
             dir.clean = false;
         }
     }
@@ -297,7 +295,7 @@ impl Replica for MemoryReplica {
     type TransferOut = Option<HashId>;
 
     fn is_dir_dirty(&self, dir: &DirHandle) -> bool {
-        self.data().dirs.get(&dir.path).map_or(false, |d| !d.clean)
+        self.data().dirs.get(&dir.path).is_some_and(|d| !d.clean)
     }
 
     fn set_dir_clean(&self, dir: &DirHandle) -> Result<bool> {
@@ -392,10 +390,7 @@ impl Replica for MemoryReplica {
             if contents.contents.contains_key(new) {
                 simple_error()
             } else if let Some(data) = contents.contents.remove(old) {
-                let is_dir = match data {
-                    Entry::Directory(_) => true,
-                    _ => false,
-                };
+                let is_dir = matches!(data, Entry::Directory(_));
                 contents.contents.insert(new.to_owned(), data);
                 Ok(is_dir)
             } else {
@@ -444,7 +439,7 @@ impl Replica for MemoryReplica {
             if contents
                 .contents
                 .get(target.0)
-                .map_or(false, |fd| target.1.matches(&fd.into()))
+                .is_some_and(|fd| target.1.matches(&fd.into()))
             {
                 let removed = contents.contents.remove(target.0).unwrap();
                 match removed {
@@ -514,7 +509,7 @@ impl Replica for MemoryReplica {
             match contents.contents.entry(source.0.to_owned()) {
                 Occupied(_) => simple_error(),
                 Vacant(entry) => Ok(entry
-                    .insert(Entry::from_file_data(&source.1, xfer)?)
+                    .insert(Entry::from_file_data(source.1, xfer)?)
                     .into()),
             }
         } else {
@@ -629,7 +624,7 @@ impl Replica for MemoryReplica {
         assert!(split.next().is_none());
 
         let mut parent = DirHandle {
-            path: path,
+            path,
             synthetics: Default::default(),
         };
         {
@@ -644,7 +639,7 @@ impl Replica for MemoryReplica {
         let parent_data = self
             .list(&mut parent)?
             .into_iter()
-            .filter(|&(ref n, _)| n == &name)
+            .filter(|(n, _)| n == &name)
             .map(|(_, d)| d)
             .next()
             .unwrap();
@@ -719,18 +714,22 @@ mod test {
         assert!(replica.is_dir_dirty(&root));
         assert!(replica.list(&mut root).unwrap().is_empty());
         assert!(replica.rename(&mut root, &oss("foo"), &oss("bar")).is_err());
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Special))
-            .is_err());
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Special,
-                &FileData::Directory(0o666),
-                Some(UNKNOWN_HASH)
-            )
-            .is_err());
+        assert!(
+            replica
+                .remove(&mut root, File(&oss("foo"), &FileData::Special))
+                .is_err()
+        );
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Special,
+                    &FileData::Directory(0o666),
+                    Some(UNKNOWN_HASH)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -903,9 +902,11 @@ mod test {
     fn remove_file_wrong_type() {
         let (mut replica, mut root) = init();
         mkreg(&mut replica, &mut root, "foo", 0o777).unwrap();
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Special))
-            .is_err());
+        assert!(
+            replica
+                .remove(&mut root, File(&oss("foo"), &FileData::Special))
+                .is_err()
+        );
     }
 
     #[test]
@@ -913,12 +914,14 @@ mod test {
         let (mut replica, mut root) = init();
         let hash =
             hashof(mkreg(&mut replica, &mut root, "foo", 0o777).unwrap());
-        assert!(replica
-            .remove(
-                &mut root,
-                File(&oss("foo"), &FileData::Regular(0o666, 99, 99, hash))
-            )
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Regular(0o666, 99, 99, hash))
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -926,12 +929,14 @@ mod test {
         let (mut replica, mut root) = init();
         mkreg(&mut replica, &mut root, "foo", 0o777).unwrap();
         let hash = replica.gen_hash();
-        assert!(replica
-            .remove(
-                &mut root,
-                File(&oss("foo"), &FileData::Regular(0o777, 99, 99, hash))
-            )
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Regular(0o777, 99, 99, hash))
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -951,12 +956,14 @@ mod test {
     fn remove_symlink_target_mismatch() {
         let (replica, mut root) = init();
         mksym(&replica, &mut root, "foo", "xyzzy").unwrap();
-        assert!(replica
-            .remove(
-                &mut root,
-                File(&oss("foo"), &FileData::Symlink(oss("plugh")))
-            )
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Symlink(oss("plugh")))
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -994,9 +1001,14 @@ mod test {
         let mut subdir = replica.chdir(&root, &oss("foo")).unwrap();
         assert!(replica.list(&mut subdir).unwrap().is_empty());
 
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Directory(0o666)))
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Directory(0o666))
+                )
+                .is_err()
+        );
         assert_eq!(1, replica.list(&mut root).unwrap().len());
         assert!(replica.list(&mut subdir).unwrap().is_empty());
         replica.chdir(&root, &oss("foo")).unwrap();
@@ -1011,9 +1023,14 @@ mod test {
         mkdir(&replica, &mut subdir, "bar", 0o777).unwrap();
         assert_eq!(1, replica.list(&mut subdir).unwrap().len());
 
-        assert!(replica
-            .remove(&mut root, File(&oss("foo"), &FileData::Directory(0o777)))
-            .is_err());
+        assert!(
+            replica
+                .remove(
+                    &mut root,
+                    File(&oss("foo"), &FileData::Directory(0o777))
+                )
+                .is_err()
+        );
         assert_eq!(1, replica.list(&mut root).unwrap().len());
         assert_eq!(1, replica.list(&mut subdir).unwrap().len());
         replica.chdir(&root, &oss("foo")).unwrap();
@@ -1163,15 +1180,17 @@ mod test {
     fn update_symlink_target_mismatch() {
         let (replica, mut root) = init();
         mksym(&replica, &mut root, "foo", "bar").unwrap();
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Symlink(oss("xyzzy")),
-                &FileData::Symlink(oss("plugh")),
-                None
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Symlink(oss("xyzzy")),
+                    &FileData::Symlink(oss("plugh")),
+                    None
+                )
+                .is_err()
+        );
 
         let list = replica.list(&mut root).unwrap();
         assert_eq!(1, list.len());
@@ -1209,15 +1228,17 @@ mod test {
         let mut subdir = replica.chdir(&root, &oss("foo")).unwrap();
         mkspec(&replica, &mut subdir, "x").unwrap();
 
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Directory(0o666),
-                &FileData::Directory(0o700),
-                None
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Directory(0o666),
+                    &FileData::Directory(0o700),
+                    None
+                )
+                .is_err()
+        );
 
         replica.list(&mut subdir).unwrap();
 
@@ -1272,15 +1293,17 @@ mod test {
                 Some(other_hash),
             )
             .unwrap();
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Regular(0o666, 0, 0, old_hash),
-                &FileData::Regular(0o777, 0, 0, UNKNOWN_HASH),
-                Some(new_hash)
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Regular(0o666, 0, 0, old_hash),
+                    &FileData::Regular(0o777, 0, 0, UNKNOWN_HASH),
+                    Some(new_hash)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -1299,15 +1322,17 @@ mod test {
                 Some(old_hash),
             )
             .unwrap();
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Regular(0o600, 0, 0, old_hash),
-                &FileData::Regular(0o777, 0, 0, UNKNOWN_HASH),
-                Some(new_hash)
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Regular(0o600, 0, 0, old_hash),
+                    &FileData::Regular(0o777, 0, 0, UNKNOWN_HASH),
+                    Some(new_hash)
+                )
+                .is_err()
+        );
     }
 
     #[test]
@@ -1362,15 +1387,17 @@ mod test {
         let mut subdir = replica.chdir(&root, &oss("foo")).unwrap();
         mkspec(&replica, &mut subdir, "bar").unwrap();
 
-        assert!(replica
-            .update(
-                &mut root,
-                &oss("foo"),
-                &FileData::Directory(0o777),
-                &FileData::Special,
-                None
-            )
-            .is_err());
+        assert!(
+            replica
+                .update(
+                    &mut root,
+                    &oss("foo"),
+                    &FileData::Directory(0o777),
+                    &FileData::Special,
+                    None
+                )
+                .is_err()
+        );
 
         let list = replica.list(&mut root).unwrap();
         assert_eq!(1, list.len());
@@ -1387,14 +1414,14 @@ mod test {
         mkspec(&replica, &mut root, "bar").unwrap();
 
         replica.condemn(&mut root, &oss("foo")).unwrap();
-        assert!(replica.is_condemned(&mut root, &oss("foo")).unwrap());
+        assert!(replica.is_condemned(&root, &oss("foo")).unwrap());
 
         let condemned_list = replica.list(&mut root).unwrap();
         assert_eq!(1, condemned_list.len());
         assert_eq!(oss("bar"), condemned_list[0].0);
 
         replica.uncondemn(&mut root, &oss("foo")).unwrap();
-        assert!(!replica.is_condemned(&mut root, &oss("foo")).unwrap());
+        assert!(!replica.is_condemned(&root, &oss("foo")).unwrap());
 
         assert_eq!(1, replica.list(&mut root).unwrap().len());
     }
@@ -1416,8 +1443,10 @@ mod test {
 
         assert!(replica.list(&mut subdir_foo).is_err());
         assert!(replica.list(&mut subdir_bar).is_err());
-        assert!(replica
-            .list(&mut replica.chdir(&root, &oss("fooo")).unwrap())
-            .is_ok());
+        assert!(
+            replica
+                .list(&mut replica.chdir(&root, &oss("fooo")).unwrap())
+                .is_ok()
+        );
     }
 }

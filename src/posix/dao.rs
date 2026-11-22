@@ -38,7 +38,7 @@ pub struct CleanDirs<'a>(Statement<'a>);
 fn to_hashid(v: Vec<u8>) -> Result<HashId> {
     if 32 == v.len() {
         let mut ret = [0; 32];
-        ret.copy_from_slice(&*v);
+        ret.copy_from_slice(&v);
         Ok(ret)
     } else {
         Err(ErrorKind::InvalidHash.into())
@@ -95,7 +95,7 @@ impl Dao {
     ///
     /// Until this iterator is dropped, one should not call any methods that
     /// operate on the `clean_dirs` table other than `set_dir_dirty`.
-    pub fn iter_clean_dirs(&self) -> Result<CleanDirs> {
+    pub fn iter_clean_dirs(&self) -> Result<CleanDirs<'_>> {
         let stmt = self.0.prepare("SELECT `path`, `hash` FROM `clean_dirs`")?;
 
         Ok(CleanDirs(stmt))
@@ -247,7 +247,7 @@ impl Dao {
             .binding(3, block_size as i64)
             .binding(4, stat.ino as i64)
             .binding(5, stat.size as i64)
-            .binding(6, stat.mtime as i64)
+            .binding(6, stat.mtime)
             .binding(7, generation)
             .run()?;
         let id = self
@@ -301,7 +301,7 @@ impl Dao {
             .binding(1, path.as_nbytes())
             .binding(2, stat.ino as i64)
             .binding(3, stat.size as i64)
-            .binding(4, stat.mtime as i64)
+            .binding(4, stat.mtime)
             .first(|s| Ok((s.read::<i64, _>(0)?, s.read::<Vec<u8>, _>(1)?)))?
         {
             self.0
@@ -427,7 +427,7 @@ impl Dao {
                            WHERE `path` = ?1",
             )
             .binding(1, path.as_nbytes())
-            .binding(2, mtime as i64)
+            .binding(2, mtime)
             .run()?)
     }
 
@@ -559,22 +559,26 @@ mod test {
         );
         assert_eq!(100, dao.next_generation().unwrap());
 
-        assert!(dao
-            .cached_file_hash(&path, &InodeStatus { ino: 4, ..stat }, 0)
-            .unwrap()
-            .is_none());
-        assert!(dao
-            .cached_file_hash(&path, &InodeStatus { mtime: 42, ..stat }, 0)
-            .unwrap()
-            .is_none());
-        assert!(dao
-            .cached_file_hash(&path, &InodeStatus { size: 42, ..stat }, 0)
-            .unwrap()
-            .is_none());
-        assert!(dao
-            .cached_file_hash(&oss("/bar"), &stat, 0)
-            .unwrap()
-            .is_none());
+        assert!(
+            dao.cached_file_hash(&path, &InodeStatus { ino: 4, ..stat }, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dao.cached_file_hash(&path, &InodeStatus { mtime: 42, ..stat }, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dao.cached_file_hash(&path, &InodeStatus { size: 42, ..stat }, 0)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            dao.cached_file_hash(&oss("/bar"), &stat, 0)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[test]
@@ -653,20 +657,23 @@ mod test {
         dao.prune_hash_cache(&oss("/foo"), 1).unwrap();
 
         // /foo/bar removed since it's under /foo and has a generation of 0.
-        assert!(dao
-            .cached_file_hash(&oss("/foo/bar"), &stat, 2)
-            .unwrap()
-            .is_none());
+        assert!(
+            dao.cached_file_hash(&oss("/foo/bar"), &stat, 2)
+                .unwrap()
+                .is_none()
+        );
         // /foo/new survives since it has a generation of 1.
-        assert!(dao
-            .cached_file_hash(&oss("/foo/new"), &stat, 2)
-            .unwrap()
-            .is_some());
+        assert!(
+            dao.cached_file_hash(&oss("/foo/new"), &stat, 2)
+                .unwrap()
+                .is_some()
+        );
         // /fooo survives since it is not under /foo
-        assert!(dao
-            .cached_file_hash(&oss("/fooo"), &stat, 2)
-            .unwrap()
-            .is_some());
+        assert!(
+            dao.cached_file_hash(&oss("/fooo"), &stat, 2)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]

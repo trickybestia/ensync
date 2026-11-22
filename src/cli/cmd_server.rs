@@ -16,16 +16,16 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-use std::io::IsTerminal;
 use std::env;
 use std::fs;
-use std::io::{stdin, stdout, Write};
+use std::io::IsTerminal;
+use std::io::{Write, stdin, stdout};
 use std::path::Path;
 
 use crate::errors::*;
-use crate::server::{rpc, LocalStorage};
+use crate::server::{LocalStorage, rpc};
 
-pub const SHELL_IDENTITY: &'static str = "I am ensync shell";
+pub const SHELL_IDENTITY: &str = "I am ensync shell";
 
 pub fn run<P: AsRef<Path>>(path: P) -> Result<()> {
     if stdin().is_terminal() || stdout().is_terminal() {

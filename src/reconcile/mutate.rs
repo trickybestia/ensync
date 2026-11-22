@@ -21,7 +21,7 @@ use std::ffi::{OsStr, OsString};
 use std::result;
 
 use super::compute::SplitAncestorState;
-use super::compute::{gen_alternate_name, Reconciliation, ReconciliationSide};
+use super::compute::{Reconciliation, ReconciliationSide, gen_alternate_name};
 use super::context::*;
 use crate::defs::*;
 use crate::errors::*;
@@ -79,9 +79,9 @@ fn replace_ancestor<A: Replica + NullTransfer>(
                 File(name, newfd),
                 A::null_transfer(newfd),
             )?;
-            files
-                .insert(name.to_owned(), newfd.clone())
-                .map(|_| panic!("Inserted ancestor already in table?"));
+            if files.insert(name.to_owned(), newfd.clone()).is_some() {
+                panic!("Inserted ancestor already in table?")
+            }
         }
         (Some(oldfd), Some(newfd)) => {
             replica.update(
@@ -121,6 +121,7 @@ impl<E> ResultToBoolExt for result::Result<(), E> {
 /// logger.
 ///
 /// Returns whether successful.
+#[allow(clippy::too_many_arguments)]
 fn try_replace_ancestor<A: Replica + NullTransfer, LOG: Logger>(
     replica: &A,
     in_dir: &mut A::Directory,
@@ -159,6 +160,7 @@ fn try_replace_ancestor<A: Replica + NullTransfer, LOG: Logger>(
 /// directories itself; such operations will simply fail.
 ///
 /// Returns the actual new state of the file on success.
+#[allow(clippy::too_many_arguments)]
 fn replace_replica<
     DST: Replica,
     SRC: Replica<TransferOut = DST::TransferIn>,
@@ -250,9 +252,9 @@ fn replace_replica<
                 Ok(r) => {
                     // We need to insert r, not newfd, because newfd may be
                     // out-of-date.
-                    dst_files
-                        .insert(name.to_owned(), r.clone())
-                        .map(|_| panic!("Inserted file already in table?"));
+                    if dst_files.insert(name.to_owned(), r.clone()).is_some() {
+                        panic!("Inserted file already in table?")
+                    }
                     Ok(Some(r))
                 }
                 Err(error) => {
@@ -280,6 +282,7 @@ fn replace_replica<
 /// Information and errors are sent on `log` using the given `side`.
 ///
 /// Returns whether successful.
+#[allow(clippy::too_many_arguments)]
 fn try_rename_replica<A: Replica, LOG: Logger>(
     replica: &A,
     dir: &mut A::Directory,
@@ -331,6 +334,7 @@ pub enum ApplyResult {
     RecursiveDelete(ReconciliationSide, FileMode),
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_use<
     DST: Replica,
     ANC: Replica + NullTransfer,
@@ -402,16 +406,16 @@ fn apply_use<
             side.into(),
         ) {
             Ok(r) => Ok(Some(r)),
-            Err(_) => return Err(ApplyResult::Fail),
+            Err(_) => Err(ApplyResult::Fail),
         }
     }
 }
 
 impl<
-        CLI: Replica,
-        ANC: Replica + NullTransfer + Condemn,
-        SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
-    > Context<CLI, ANC, SRV>
+    CLI: Replica,
+    ANC: Replica + NullTransfer + Condemn,
+    SRV: Replica<TransferIn = CLI::TransferOut, TransferOut = CLI::TransferIn>,
+> Context<CLI, ANC, SRV>
 {
     /// Applies the determined reconciliation for one file.
     ///
@@ -664,9 +668,9 @@ pub mod test {
     use std::sync::Arc;
 
     use crate::defs::test_helpers::*;
-    use crate::defs::*;
+
     use crate::log::{PrintlnLogger, ReplicaSide};
-    use crate::memory_replica::{self, simple_error, DirHandle, MemoryReplica};
+    use crate::memory_replica::{self, DirHandle, MemoryReplica, simple_error};
     use crate::replica::{NullTransfer, Replica};
     use crate::rules::{
         engine::{DirEngine, FileEngine, SyncRules},
@@ -744,7 +748,7 @@ pub mod test {
                 cli: mem::replace(&mut self.client, MemoryReplica::empty()),
                 anc: mem::replace(&mut self.ancestor, MemoryReplica::empty()),
                 srv: mem::replace(&mut self.server, MemoryReplica::empty()),
-                log: Box::new(self.logger.clone()),
+                log: Box::new(self.logger),
                 root_rules: self
                     .rules
                     .file(File(OsStr::new(""), &FileData::Special)),
@@ -1055,7 +1059,7 @@ pub mod test {
                 &mut dst_root,
                 &mut files,
                 &src,
-                &mut src_root,
+                &src_root,
                 &oss(""),
                 &foo,
                 Some(&fd),

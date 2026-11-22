@@ -494,7 +494,7 @@ fn watch_doesnt_notify_changes_by_self() {
 fn watch_notifies_changes_by_other() {
     init!(dir, storage1);
     let mut storage1 = storage1;
-    let storage2 = create_storage(&dir.path());
+    let storage2 = create_storage(dir.path());
 
     let seen_notification = Arc::new(AtomicUsize::new(0));
     let seen_notification2 = seen_notification.clone();

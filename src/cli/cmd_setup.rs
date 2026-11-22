@@ -48,10 +48,10 @@ trait PathExt {
 }
 impl PathExt for Path {
     fn exists2(&self) -> bool {
-        return self.iter().next().is_none() || self.exists();
+        self.iter().next().is_none() || self.exists()
     }
     fn is_dir2(&self) -> bool {
-        return self.iter().next().is_none() || self.is_dir();
+        self.iter().next().is_none() || self.is_dir()
     }
 }
 
@@ -90,7 +90,7 @@ Use this configuration path? ",
         ))?;
     }
 
-    if !config.parent().map_or(true, |p| p.exists2()) {
+    if !config.parent().is_none_or(|p| p.exists2()) {
         confirm(&format!(
             "\
 Parent of configuration location, '{}', does not exist;
@@ -125,12 +125,12 @@ Does this look reasonable? ",
             full_local.display(),
             remote_path,
             host,
-            shell_escape(&host),
+            shell_escape(host),
             full_config.display()
         ))?;
 
         let mut child = process::Command::new("ssh")
-            .arg(&host)
+            .arg(host)
             // If we actually connect to a POSIX shell, we get the `0`
             // response. However, if the server is running ensync shell, it
             // ignores these arguments and returns `SHELL_IDENTITY`.
@@ -144,7 +144,7 @@ Does this look reasonable? ",
             .stdout(process::Stdio::piped())
             .spawn()
             .chain_err(|| {
-                format!("Failed to run `ssh {}`", shell_escape(&host))
+                format!("Failed to run `ssh {}`", shell_escape(host))
             })?;
 
         let mut input =
@@ -177,14 +177,14 @@ Does this look reasonable? ",
 
             command = format!(
                 "ssh -T {} {} server {}",
-                shell_escape(&host),
+                shell_escape(host),
                 // Awkwardly, we need to double-escape the paths
                 // here since they get passed to `sh -c`.
                 shell_escape(&shell_escape(&ensync_path)),
                 shell_escape(&shell_escape(remote_path))
             );
         } else {
-            command = format!("ssh -T {}", shell_escape(&host));
+            command = format!("ssh -T {}", shell_escape(host));
         }
         server_spec = format!("shell:{}", command);
         storage = Arc::new(connect_server_storage(
@@ -262,10 +262,10 @@ mode = "---/---"
         .list(&mut proot)
         .chain_err(|| "Failed to list logical roots on server")?
     {
-        if let FileData::Directory(..) = fd {
-            if let Ok(name) = name.into_string() {
-                existing_roots.insert(name);
-            }
+        if let FileData::Directory(..) = fd
+            && let Ok(name) = name.into_string()
+        {
+            existing_roots.insert(name);
         }
     }
 
@@ -291,13 +291,13 @@ enter a name for a new logical root."
                 existing_roots.iter().next().unwrap(),
                 "Logical root name",
             )?;
-            if !existing_roots.contains(&selected) {
-                if !ask(&format!(
+            if !existing_roots.contains(&selected)
+                && !ask(&format!(
                     "Root '{}' does not exist. Create it? ",
                     selected
-                ))? {
-                    continue;
-                }
+                ))?
+            {
+                continue;
             }
             break;
         }
@@ -540,7 +540,7 @@ fn configure_server<R: Read, W: Write>(
     // Read the response from the `printf` at the beginning of the ssh shell
     // command.
     let is_ensync_shell = read_shell_response(&mut output)?;
-    if SHELL_IDENTITY == &is_ensync_shell {
+    if SHELL_IDENTITY == is_ensync_shell {
         if !remote_path.is_empty() {
             return Err("The server is running ensync as a shell; you cannot \
                         specify the server-side path (just write `host:` or \

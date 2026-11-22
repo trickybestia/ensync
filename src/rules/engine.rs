@@ -71,7 +71,7 @@ impl Condition {
             .unwrap_or(false),
             Condition::Target(ref rx) => match *data {
                 FileData::Symlink(ref target) => {
-                    rx.is_match(&*target.to_string_lossy())
+                    rx.is_match(&target.to_string_lossy())
                 }
                 _ => false,
             },
@@ -192,11 +192,7 @@ pub struct ErrorLocation {
 
 impl ErrorLocation {
     fn new(section: String, ix: usize, field: String) -> Self {
-        ErrorLocation {
-            section: section,
-            ix: ix,
-            field: field,
-        }
+        ErrorLocation { section, ix, field }
     }
 }
 
@@ -481,13 +477,13 @@ impl SyncRules {
                     rule.actions.push(Action::Include(parse_state_ref_list(
                         e_val,
                         loc,
-                        &state_indices,
+                        state_indices,
                     )?));
                 } else if "switch" == e_name {
                     rule.actions.push(Action::Switch(parse_state_ref(
                         e_val,
                         &loc,
-                        &state_indices,
+                        state_indices,
                     )?));
                 } else if "stop" == e_name {
                     rule.actions
@@ -560,7 +556,7 @@ fn parse_state_ref_list(
         &toml::Value::String(_) => {
             Ok(vec![parse_state_ref(val, &loc, state_indices)?])
         }
-        &toml::Value::Array(ref elts) => {
+        toml::Value::Array(elts) => {
             let mut accum = Vec::new();
             for elt in elts {
                 accum.push(parse_state_ref(elt, &loc, state_indices)?);
@@ -702,7 +698,7 @@ impl DirEngine {
         let name = file.0.to_string_lossy();
 
         let mut new_state = self.state.clone();
-        new_state.push_dir(&*name);
+        new_state.push_dir(&name);
         new_state.apply_switch();
 
         let mut path = String::new();
@@ -710,7 +706,7 @@ impl DirEngine {
         self.rules.apply_rules(
             &mut new_state,
             |g| &g.files,
-            |r| self.rules.rules[r].matches(&path, &*name, file.1),
+            |r| self.rules.rules[r].matches(&path, &name, file.1),
         );
         mem::swap(&mut new_state.path, &mut path);
 
@@ -725,7 +721,7 @@ impl FileEngine {
     pub fn new(rules: Arc<SyncRules>) -> Self {
         let init_state = rules.root_ix;
         FileEngine {
-            rules: rules,
+            rules,
             state: EngineState::new(init_state),
         }
     }
@@ -767,10 +763,7 @@ impl DirEngineBuilder {
 
         rules.apply_rules(&mut state, |g| &g.siblings, |r| rules_matched[r]);
         state.apply_switch();
-        DirEngine {
-            rules: rules,
-            state: state,
-        }
+        DirEngine { rules, state }
     }
 }
 
@@ -880,7 +873,7 @@ stop = "return"
             (
                 &Action::Mode(mode),
                 &Action::TrustClientUnixMode(false),
-                &Action::Include(ref included),
+                Action::Include(included),
                 &Action::Switch(switched),
                 &Action::Stop(stop),
             ) => {
@@ -899,7 +892,7 @@ stop = "return"
         assert_eq!(0, z1r.conditions.len());
         assert_eq!(2, z1r.actions.len());
         match (&z1r.actions[0], &z1r.actions[1]) {
-            (&Action::Include(ref included), &Action::Stop(stop)) => {
+            (Action::Include(included), &Action::Stop(stop)) => {
                 assert_eq!(1, included.len());
                 assert_eq!(2, included[0]);
                 assert_eq!(StopType::Return, stop);

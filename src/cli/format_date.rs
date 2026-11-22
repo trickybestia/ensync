@@ -21,8 +21,8 @@ use chrono::{DateTime, NaiveDateTime, Utc};
 use crate::defs::FileTime;
 
 #[allow(dead_code)]
-pub const ZERO: &'static str = "1970-01-01 00:00Z";
-pub const EMPTY: &'static str = "                 ";
+pub const ZERO: &str = "1970-01-01 00:00Z";
+pub const EMPTY: &str = "                 ";
 
 pub fn format_timestamp(mtime: FileTime) -> String {
     format_date(&DateTime::<Utc>::from_utc(

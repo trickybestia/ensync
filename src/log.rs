@@ -92,6 +92,9 @@ impl<T: Logger + ?Sized> Logger for Box<T> {
 }
 
 #[cfg(test)]
+pub use self::println_logger::PrintlnLogger;
+
+#[cfg(test)]
 mod println_logger {
     use super::*;
 
@@ -114,6 +117,3 @@ mod println_logger {
         }
     }
 }
-
-#[cfg(test)]
-pub use self::println_logger::PrintlnLogger;

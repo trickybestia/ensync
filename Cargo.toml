@@ -44,6 +44,7 @@ default-features = false
 
 [lints.rust]
 unsafe_code = "forbid"
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(has_error_description_deprecated)'] }
 
 [dev-dependencies]
 nix = { version = "0.30", features = ["fs"] }

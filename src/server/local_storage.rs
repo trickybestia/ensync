@@ -16,8 +16,8 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-use std::collections::hash_map::Entry::*;
 use std::collections::HashMap;
+use std::collections::hash_map::Entry::*;
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, Write};
 use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
@@ -25,9 +25,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use std::u32;
 
-use sqlite;
 use tempfile::{self, NamedTempFile, PersistError};
 use tiny_keccak::Keccak;
 
@@ -37,6 +35,7 @@ use crate::server::storage::*;
 use crate::sql::{self, StatementEx};
 
 const NX: u32 = !0o7111;
+type WatchList = Arc<Mutex<HashMap<HashId, (HashId, u32)>>>;
 
 /// Implements the server storage system on the local filesystem.
 ///
@@ -47,13 +46,13 @@ const NX: u32 = !0o7111;
 /// directory contains:
 ///
 /// - A shared SQLite database named `state.sqlite`. The presence of this
-/// file is also used to ascertain whether a directory is in fact a server
-/// root.
+///   file is also used to ascertain whether a directory is in fact a server
+///   root.
 ///
 /// - A temporary directory `tmp`. This directory is usually empty. Temporary
-/// files are created here and immediately deleted or populated then moved into
-/// place. It is always safe to indiscriminately wipe the contents of `tmp`,
-/// but it may interrupt active syncing processes.
+///   files are created here and immediately deleted or populated then moved into
+///   place. It is always safe to indiscriminately wipe the contents of `tmp`,
+///   but it may interrupt active syncing processes.
 ///
 /// - A directory `dirs` containing all directory data.
 ///
@@ -98,7 +97,7 @@ pub struct LocalStorage {
     /// to their expected version and length.
     ///
     /// Lock hierarchy: This is a leaf lock.
-    watch_list: Option<Arc<Mutex<HashMap<HashId, (HashId, u32)>>>>,
+    watch_list: Option<WatchList>,
 }
 
 #[derive(Debug, Default)]
@@ -193,13 +192,13 @@ impl LocalStorage {
             .chain_err(|| "Failed to create temporary file")?;
 
         Ok(LocalStorage {
-            tmpdir: tmpdir,
-            objdir: objdir,
-            dirdir: dirdir,
+            tmpdir,
+            objdir,
+            dirdir,
             dirty_dir_buf: Mutex::new(tmpfile),
             db: Arc::new(Mutex::new(cxn)),
             txns: Mutex::new(HashMap::default()),
-            permissions: permissions,
+            permissions,
             watch_list: None,
         })
     }
@@ -278,12 +277,12 @@ impl LocalStorage {
                     let mut tmpfile = self.named_temp_file()?;
                     tmpfile.write_all(data)?;
 
-                    match tmpfile.persist(self.dir_path(&id, &ver)) {
+                    match tmpfile.persist(self.dir_path(id, ver)) {
                         Ok(persisted) => {
                             persisted.sync_all()?;
                         }
                         Err(PersistError { error, .. }) => {
-                            return Err(error.into())
+                            return Err(error.into());
                         }
                     }
                 }
@@ -320,7 +319,7 @@ impl LocalStorage {
                     let mut file = fs::OpenOptions::new()
                         .write(true)
                         .create(false)
-                        .open(self.dir_path(&id, &ver))?;
+                        .open(self.dir_path(id, &ver))?;
                     file.seek(io::SeekFrom::Start(old_len as u64))?;
                     // This will have effect even if the transaction rolls
                     // back, but the length in SQLite will still reflect the
@@ -378,7 +377,7 @@ impl LocalStorage {
                     // In virtually all cases, the object will already exist,
                     // as `PutObj` adds a zero-ref entry eagerly. We only get
                     // here if we lost a race to a cleaner.
-                    let objpath = self.obj_path(&id);
+                    let objpath = self.obj_path(id);
                     if fs::symlink_metadata(&objpath).is_err() {
                         let mut tmpfile = self.named_temp_file()?;
                         io::copy(handle, &mut tmpfile)?;
@@ -555,15 +554,13 @@ fn dir_exists_with_version(
 impl Storage for LocalStorage {
     fn getdir(&self, id: &HashId) -> Result<Option<(HashId, Vec<u8>)>> {
         for _ in 0..256 {
-            let r: Option<(Vec<u8>, i64)> =
-                {
-                    let db = self.db.lock().unwrap();
-                    let r = db.prepare(
-                    "SELECT `ver`, `length` FROM `dirs` WHERE `id` = ?1")
-                     .binding(1, &id[..])
-                     .first(|s| Ok((s.read(0)?, s.read(1)?)))?;
-                    r
-                };
+            let r: Option<(Vec<u8>, i64)> = {
+                let db = self.db.lock().unwrap();
+
+                db.prepare("SELECT `ver`, `length` FROM `dirs` WHERE `id` = ?1")
+                    .binding(1, &id[..])
+                    .first(|s| Ok((s.read(0)?, s.read(1)?)))?
+            };
 
             if let Some((vh, iv)) = r {
                 let mut v = UNKNOWN_HASH;
@@ -582,7 +579,7 @@ impl Storage for LocalStorage {
                     // another process which was deleting it, so reread from
                     // the database.
                     Err(ref ioe) if io::ErrorKind::NotFound == ioe.kind() => {
-                        continue
+                        continue;
                     }
                     Err(e) => return Err(e.into()),
                 }
@@ -763,7 +760,7 @@ impl Storage for LocalStorage {
             TxOp::Updir {
                 id: *id,
                 sver: *sv,
-                old_len: old_len,
+                old_len,
                 append: append.to_vec(),
             },
         )
@@ -781,7 +778,7 @@ impl Storage for LocalStorage {
             TxOp::Rmdir {
                 id: *id,
                 sver: *sv,
-                old_len: old_len,
+                old_len,
             },
         )
     }
@@ -878,41 +875,46 @@ impl Storage for LocalStorage {
 
         let weak_db = Arc::downgrade(&self.db);
 
-        thread::spawn(move || loop {
-            // We implement watching by simple polling, which admittedly isn't
-            // the most efficient approach. This was chosen on account of
-            // several considerations:
-            //
-            // - We can't use the `notify` crate here, because we have no way
-            // to go from the directory filename to the directory id since it
-            // is SHA-3'ed.
-            //
-            // - Proper IPC systems would make ensync heavier and less
-            // portable.
-            //
-            // - Using polling means zero overhead for uses not requiring
-            // watching, nor do other parts of the code need to be aware of how
-            // change detection happens.
-            #[cfg(test)]
-            const POLL_INTERVAL: u64 = 1;
-            #[cfg(not(test))]
-            const POLL_INTERVAL: u64 = 30;
+        thread::spawn(move || {
+            loop {
+                // We implement watching by simple polling, which admittedly isn't
+                // the most efficient approach. This was chosen on account of
+                // several considerations:
+                //
+                // - We can't use the `notify` crate here, because we have no way
+                // to go from the directory filename to the directory id since it
+                // is SHA-3'ed.
+                //
+                // - Proper IPC systems would make ensync heavier and less
+                // portable.
+                //
+                // - Using polling means zero overhead for uses not requiring
+                // watching, nor do other parts of the code need to be aware of how
+                // change detection happens.
+                #[cfg(test)]
+                const POLL_INTERVAL: u64 = 1;
+                #[cfg(not(test))]
+                const POLL_INTERVAL: u64 = 30;
 
-            thread::sleep(Duration::new(POLL_INTERVAL, 0));
+                thread::sleep(Duration::new(POLL_INTERVAL, 0));
 
-            let (watch_list, db) =
-                match (weak_watch_list.upgrade(), weak_db.upgrade()) {
-                    (Some(w), Some(d)) => (w, d),
-                    _ => return,
-                };
+                let (watch_list, db) =
+                    match (weak_watch_list.upgrade(), weak_db.upgrade()) {
+                        (Some(w), Some(d)) => (w, d),
+                        _ => return,
+                    };
 
-            let wl_copy = watch_list.lock().unwrap().clone();
-            for (id, (ver, len)) in wl_copy {
-                if let Ok(false) =
-                    dir_exists_with_version(&db.lock().unwrap(), &id, &ver, len)
-                {
-                    watch_list.lock().unwrap().remove(&id);
-                    f(Some(&id));
+                let wl_copy = watch_list.lock().unwrap().clone();
+                for (id, (ver, len)) in wl_copy {
+                    if let Ok(false) = dir_exists_with_version(
+                        &db.lock().unwrap(),
+                        &id,
+                        &ver,
+                        len,
+                    ) {
+                        watch_list.lock().unwrap().remove(&id);
+                        f(Some(&id));
+                    }
                 }
             }
         });
@@ -940,18 +942,24 @@ mod test {
     fn adding_ops_to_nx_transaction_is_err() {
         init!(dir, storage);
 
-        assert!(storage
-            .mkdir(42, &hashid(1), &hashid(2), &hashid(3), b"hello world")
-            .is_err());
-        assert!(storage
-            .updir(42, &hashid(1), &hashid(2), 99, b"hello world")
-            .is_err());
+        assert!(
+            storage
+                .mkdir(42, &hashid(1), &hashid(2), &hashid(3), b"hello world")
+                .is_err()
+        );
+        assert!(
+            storage
+                .updir(42, &hashid(1), &hashid(2), 99, b"hello world")
+                .is_err()
+        );
         assert!(storage.rmdir(42, &hashid(1), &hashid(2), 99).is_err());
         // Use `putobj` first as it will actually create the object anyway, and
         // then `linkobj` will actually need to interact with the transaction.
-        assert!(storage
-            .putobj(42, &hashid(1), &hashid(2), b"hello world")
-            .is_err());
+        assert!(
+            storage
+                .putobj(42, &hashid(1), &hashid(2), b"hello world")
+                .is_err()
+        );
         assert!(storage.linkobj(42, &hashid(1), &hashid(2)).is_err());
         assert!(storage.unlinkobj(42, &hashid(1), &hashid(2)).is_err());
     }

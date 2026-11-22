@@ -74,23 +74,28 @@ impl<T> WorkStack<T> {
         let mut lock = self.data.lock().unwrap();
 
         loop {
-            match lock.tasks.pop() { Some(task) => {
-                // We got a task. Increment the in-flight counter so other
-                // threads know we might be adding something later, then unlock
-                // to begin processing.
-                lock.in_flight += 1;
-                drop(lock);
-                f(task);
-                lock = self.data.lock().unwrap();
-                lock.in_flight -= 1;
-            } _ => if lock.in_flight > 0 {
-                // No tasks ready, but other threads are still processing and
-                // thus might add more tasks later.
-                lock = self.cond.wait(lock).unwrap();
-            } else {
-                // No tasks and nothing processing; we're done.
-                break;
-            }}
+            match lock.tasks.pop() {
+                Some(task) => {
+                    // We got a task. Increment the in-flight counter so other
+                    // threads know we might be adding something later, then unlock
+                    // to begin processing.
+                    lock.in_flight += 1;
+                    drop(lock);
+                    f(task);
+                    lock = self.data.lock().unwrap();
+                    lock.in_flight -= 1;
+                }
+                _ => {
+                    if lock.in_flight > 0 {
+                        // No tasks ready, but other threads are still processing and
+                        // thus might add more tasks later.
+                        lock = self.cond.wait(lock).unwrap();
+                    } else {
+                        // No tasks and nothing processing; we're done.
+                        break;
+                    }
+                }
+            }
         }
 
         // Everything's done. Make sure all the other threads wake up to

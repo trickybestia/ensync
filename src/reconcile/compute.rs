@@ -52,7 +52,7 @@ pub fn gen_alternate_name<F: Fn(&OsStr) -> bool>(
     }
 
     for n in 1u64.. {
-        let new: OsString = format!("{}{}{}", &base, n, &extension).into();
+        let new: OsString = format!("{}{}{}", base, n, extension).into();
         if !in_use(&new) {
             return new;
         }
@@ -137,6 +137,7 @@ pub enum Reconciliation {
 /// Indicates what kind of conflict, if any, was encountered during
 /// reconciliation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[allow(clippy::enum_variant_names)]
 pub enum Conflict {
     /// No conflict.
     NoConflict,
@@ -297,9 +298,9 @@ pub fn choose_reconciliation(
         // that disagrees with the ancestor, or the one that is newer if they
         // both disagree.
         if !c.matches(s) && c.matches_data(s) {
-            let server_wins = if a.map_or(false, |a| c.matches(a)) {
+            let server_wins = if a.is_some_and(|a| c.matches(a)) {
                 true
-            } else if a.map_or(false, |a| s.matches(a)) {
+            } else if a.is_some_and(|a| s.matches(a)) {
                 false
             } else {
                 s.newer_than(c)
@@ -331,7 +332,7 @@ pub fn choose_reconciliation(
         // No conflict if one side agrees with the ancestor. As with creates
         // and deletes, force settings revert the updated side instead. We
         // don't care about metadata (modified time) here.
-        } else if a.map_or(false, |a| a.matches(c)) {
+        } else if a.is_some_and(|a| a.matches(c)) {
             (
                 if mode.inbound.update.on() {
                     use_server
@@ -342,7 +343,7 @@ pub fn choose_reconciliation(
                 },
                 NoConflict,
             )
-        } else if a.map_or(false, |a| a.matches(s)) {
+        } else if a.is_some_and(|a| a.matches(s)) {
             (
                 if mode.outbound.update.on() {
                     use_client
@@ -354,7 +355,7 @@ pub fn choose_reconciliation(
                 NoConflict,
             )
         } else if a
-            .map_or(false, |a| a.matches_content(c) && a.matches_content(s))
+            .is_some_and(|a| a.matches_content(c) && a.matches_content(s))
         {
             // If both sides disagree about mode but not content, propogate the
             // mode whichever direction we can, prefering the client
@@ -368,7 +369,7 @@ pub fn choose_reconciliation(
                 },
                 EditEdit(ConflictingEdit::Mode, ConflictingEdit::Mode),
             )
-        } else if a.map_or(false, |a| a.matches_content(c)) {
+        } else if a.is_some_and(|a| a.matches_content(c)) {
             // If one side changes the mode and the other side changes the
             // content, prefer the content side unless force overrides.
             (
@@ -379,7 +380,7 @@ pub fn choose_reconciliation(
                 },
                 EditEdit(ConflictingEdit::Mode, ConflictingEdit::Content),
             )
-        } else if a.map_or(false, |a| a.matches_content(s)) {
+        } else if a.is_some_and(|a| a.matches_content(s)) {
             (
                 match (mode.inbound.update, mode.outbound.update) {
                     (_, Force) | (_, On) => use_client,
@@ -569,8 +570,8 @@ mod test {
         for_every_sync_triple(|c, a, s| {
             match choose_reconciliation(c, a, s, mode).0 {
                 InSync | Unsync | Irreconcilable => (),
-                Use(side) if Client == side => (),
-                Split(side, _) if Server == side => (),
+                Use(Client) => (),
+                Split(Server, _) => (),
 
                 other => panic_reconciliation(other, c, a, s),
             }
@@ -586,8 +587,8 @@ mod test {
         for_every_sync_triple(|c, a, s| {
             match choose_reconciliation(c, a, s, mode).0 {
                 InSync | Unsync | Irreconcilable => (),
-                Use(side) if Server == side => (),
-                Split(side, _) if Client == side => (),
+                Use(Server) => (),
+                Split(Client, _) => (),
 
                 other => panic_reconciliation(other, c, a, s),
             }
@@ -609,8 +610,8 @@ mod test {
                 },
 
                 InSync => (),
-                Use(side) if Client == side => (),
-                Split(side, _) if Server == side => (),
+                Use(Client) => (),
+                Split(Server, _) => (),
 
                 other => panic_reconciliation(other, c, a, s),
             }
@@ -631,10 +632,10 @@ mod test {
         expected_conflict: Conflict,
     ) -> AssertReconcilliation<'a> {
         AssertReconcilliation {
-            cli: cli,
-            anc: anc,
-            srv: srv,
-            expected_conflict: expected_conflict,
+            cli,
+            anc,
+            srv,
+            expected_conflict,
         }
     }
 
