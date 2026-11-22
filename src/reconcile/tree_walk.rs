@@ -111,7 +111,7 @@ impl<
         "Attempted to reconcile a file that doesn't exist in any replica.")));
 
         if let Some(ref mut cli) = cli
-            && !rules.trust_client_unix_mode()
+            && (!self.cli.tracks_unix_mode() || !rules.trust_client_unix_mode())
             && let Some(other) = srv.as_ref().or(anc.as_ref())
         {
             cli.transrich_unix_mode(other);

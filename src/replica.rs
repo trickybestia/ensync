@@ -17,8 +17,7 @@
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
 use std::ffi::{OsStr, OsString};
-use std::os::unix::net::UnixDatagram;
-use std::sync::{Mutex, Weak};
+use std::sync::{Condvar, Mutex, Weak};
 use std::time::Duration;
 
 use crate::defs::*;
@@ -69,6 +68,11 @@ pub trait Replica: Sync + Send {
     type TransferIn;
     /// Type which this replica uses to transfer data out to the other replica.
     type TransferOut;
+
+    /// Whether this replica stores Unix mode bits faithfully.
+    fn tracks_unix_mode(&self) -> bool {
+        true
+    }
 
     /// Returns whether any fatal errors have occurred.
     fn is_fatal(&self) -> bool {
@@ -284,25 +288,13 @@ struct WatchStatus {
 
 /// Handle passed to `Replica::watch` to allow notifying higher-level code
 /// about changes within the replica.
-///
-/// Initially, the `Watch` is marked both `dirty` and `context_lost`.
+#[derive(Default)]
 pub struct WatchHandle {
-    notify: UnixDatagram,
-    wait: UnixDatagram,
+    changed: Condvar,
     status: Mutex<WatchStatus>,
 }
 
 impl WatchHandle {
-    pub fn new() -> Result<Self> {
-        let (notify, wait) = UnixDatagram::pair()?;
-
-        Ok(WatchHandle {
-            notify,
-            wait,
-            status: Mutex::new(WatchStatus::default()),
-        })
-    }
-
     /// Checks whether this `WatchHandle` has the `dirty` flag set, indicating
     /// that changes have been detected. The `dirty` flag is then cleared.
     pub fn check_dirty(&self) -> bool {
@@ -324,14 +316,17 @@ impl WatchHandle {
 
     /// Notify all waiters without changing state.
     pub fn notify(&self) {
-        self.notify.send(&[0]).unwrap();
+        // Synchronise with wait's predicate check so an interrupt cannot
+        // arrive between that check and entering the wait.
+        let _status = self.status.lock().unwrap();
+        self.changed.notify_all();
     }
 
     /// Sets the `dirty` flag on the `WatchHandle` and notifies all waiters.
     pub fn set_dirty(&self) {
         let mut lock = self.status.lock().unwrap();
         lock.dirty = true;
-        self.notify();
+        self.changed.notify_all();
     }
 
     /// Sets the `dirty` and `context_lost` flags on the `WatchHandle` and
@@ -340,16 +335,19 @@ impl WatchHandle {
         let mut lock = self.status.lock().unwrap();
         lock.dirty = true;
         lock.context_lost = true;
-        self.notify();
+        self.changed.notify_all();
     }
 
     /// Delays the caller until the `dirty` flag is set or the process has been
     /// interrupted.
     pub fn wait(&self) {
-        while !self.status.lock().unwrap().dirty && !interrupt::is_interrupted()
-        {
-            self.wait.recv(&mut []).unwrap();
-        }
+        drop(
+            self.changed
+                .wait_while(self.status.lock().unwrap(), |status| {
+                    !status.dirty && !interrupt::is_interrupted()
+                })
+                .unwrap(),
+        );
     }
 }
 

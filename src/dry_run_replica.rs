@@ -59,6 +59,10 @@ impl<T: Replica> Replica for DryRunReplica<T> {
     type TransferIn = ();
     type TransferOut = ();
 
+    fn tracks_unix_mode(&self) -> bool {
+        self.0.tracks_unix_mode()
+    }
+
     fn is_fatal(&self) -> bool {
         self.0.is_fatal()
     }

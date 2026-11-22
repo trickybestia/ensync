@@ -23,7 +23,12 @@ use sqlite::{State, Statement};
 
 use crate::defs::*;
 use crate::errors::*;
+use crate::platform::decode_os_string;
 use crate::sql::*;
+
+fn is_separator(byte: u8) -> bool {
+    byte == b'/' || (cfg!(windows) && byte == b'\\')
+}
 
 /// Front-end to SQLite for the POSIX (client-side) replica.
 ///
@@ -61,7 +66,7 @@ impl<'a> Iterator for CleanDirs<'a> {
 
 impl<'a> CleanDirs<'a> {
     fn read_row(&mut self) -> Result<(OsString, HashId)> {
-        let path = self.0.read::<Vec<u8>, _>(0)?.as_nstr()?.to_owned();
+        let path = decode_os_string(self.0.read::<Vec<u8>, _>(0)?)?;
         let hash = to_hashid(self.0.read::<Vec<u8>, _>(1)?)?;
         Ok((path, hash))
     }
@@ -106,10 +111,9 @@ impl Dao {
     /// If there is already a record for `path_str`, it is updated to reference
     /// `hash`.
     pub fn set_dir_clean(&self, path_str: &OsStr, hash: &HashId) -> Result<()> {
-        let path = path_str.as_nbytes();
+        let path = path_str.as_encoded_bytes();
 
-        debug_assert!(b'/' == path[0]);
-        debug_assert!(b'/' == path[path.len() - 1]);
+        debug_assert!(is_separator(path[path.len() - 1]));
 
         self.0
             .prepare(
@@ -133,21 +137,21 @@ impl Dao {
     /// unspecified (see http://sqlite.org/isolation.html) but produces
     /// reasonable results either way.
     pub fn set_dir_dirty(&self, path_str: &OsStr) -> Result<()> {
-        let mut path = path_str.as_nbytes();
+        let mut path = path_str.as_encoded_bytes();
 
         loop {
-            debug_assert!(b'/' == path[0]);
-            debug_assert!(b'/' == path[path.len() - 1]);
+            debug_assert!(is_separator(path[path.len() - 1]));
 
             self.0
                 .prepare("DELETE FROM `clean_dirs` WHERE `path` = ?1")
                 .binding(1, path)
                 .run()?;
 
-            if let Some(slash) =
-                path[0..path.len() - 1].iter().rposition(|c| b'/' == *c)
+            if let Some(slash) = path[..path.len() - 1]
+                .iter()
+                .rposition(|&c| is_separator(c))
             {
-                path = &path[0..slash + 1];
+                path = &path[..slash + 1];
             } else {
                 break;
             }
@@ -159,13 +163,12 @@ impl Dao {
     /// Returns whether the directory indicated by path `path_str` is
     /// considered clean.
     ///
-    /// `path_str` must have both leading and trailing slash.
+    /// `path_str` must be absolute and end in a separator.
     pub fn is_dir_clean(&self, path_str: &OsStr) -> Result<bool> {
-        let mut path = path_str.as_nbytes();
+        let mut path = path_str.as_encoded_bytes();
 
         loop {
-            debug_assert!(b'/' == path[0]);
-            debug_assert!(b'/' == path[path.len() - 1]);
+            debug_assert!(is_separator(path[path.len() - 1]));
 
             if self
                 .0
@@ -179,10 +182,11 @@ impl Dao {
                 return Ok(true);
             }
 
-            if let Some(slash) =
-                path[0..path.len() - 1].iter().rposition(|c| b'/' == *c)
+            if let Some(slash) = path[..path.len() - 1]
+                .iter()
+                .rposition(|&c| is_separator(c))
             {
-                path = &path[0..slash + 1];
+                path = &path[..slash + 1];
             } else {
                 break;
             }
@@ -224,7 +228,7 @@ impl Dao {
         stat: &InodeStatus,
         generation: i64,
     ) -> Result<()> {
-        let path = path_str.as_nbytes();
+        let path = path_str.as_encoded_bytes();
 
         // Kill any existing entry to transitively remove any block caches
         // as well.
@@ -298,7 +302,7 @@ impl Dao {
                  AND   `inode` = ?2 AND `size` = ?3 \
                  AND   `mtime` = ?4",
             )
-            .binding(1, path.as_nbytes())
+            .binding(1, path.as_encoded_bytes())
             .binding(2, stat.ino as i64)
             .binding(3, stat.size as i64)
             .binding(4, stat.mtime)
@@ -327,23 +331,30 @@ impl Dao {
         root: &OsStr,
         generation: i64,
     ) -> Result<()> {
-        let mut lower = root.as_nbytes().to_vec();
-        if Some(&b'/') != lower.last() {
-            lower.push(b'/');
-        }
-        let mut upper = lower.clone();
-        *upper.last_mut().unwrap() = b'/' + 1;
+        let separators: &[u8] = if cfg!(windows) { b"/\\" } else { b"/" };
+        let root = root.as_encoded_bytes();
+        let root = if root.last().is_some_and(|&b| is_separator(b)) {
+            &root[..root.len() - 1]
+        } else {
+            root
+        };
+        for &separator in separators {
+            let mut lower = root.to_vec();
+            lower.push(separator);
+            let mut upper = lower.clone();
+            *upper.last_mut().unwrap() += 1;
 
-        self.0
-            .prepare(
-                "DELETE FROM `hash_cache` \
-                             WHERE `path` >= ?1 AND path < ?2 \
-                             AND `generation` < ?3",
-            )
-            .binding(1, &lower[..])
-            .binding(2, &upper[..])
-            .binding(3, generation)
-            .run()?;
+            self.0
+                .prepare(
+                    "DELETE FROM `hash_cache` \
+                                 WHERE `path` >= ?1 AND path < ?2 \
+                                 AND `generation` < ?3",
+                )
+                .binding(1, &lower[..])
+                .binding(2, &upper[..])
+                .binding(3, generation)
+                .run()?;
+        }
         Ok(())
     }
 
@@ -367,7 +378,7 @@ impl Dao {
             .first(|s| s.read::<Vec<u8>, _>(0))?;
 
         if let Some(pv) = pathvec {
-            Ok(Some(pv.as_nstr()?.to_owned()))
+            Ok(Some(decode_os_string(pv)?))
         } else {
             Ok(None)
         }
@@ -407,7 +418,7 @@ impl Dao {
             })?;
 
         if let Some((pathvec, bs, off)) = res {
-            Ok(Some((pathvec.as_nstr()?.to_owned(), bs, off)))
+            Ok(Some((decode_os_string(pathvec)?, bs, off)))
         } else {
             Ok(None)
         }
@@ -426,7 +437,7 @@ impl Dao {
                 "UPDATE `hash_cache` SET `mtime` = ?2 \
                            WHERE `path` = ?1",
             )
-            .binding(1, path.as_nbytes())
+            .binding(1, path.as_encoded_bytes())
             .binding(2, mtime)
             .run()?)
     }
@@ -440,8 +451,8 @@ impl Dao {
                 "UPDATE `hash_cache` SET `path` = ?2 \
                                 WHERE `path` = ?1",
             )
-            .binding(1, old.as_nbytes())
-            .binding(2, new.as_nbytes())
+            .binding(1, old.as_encoded_bytes())
+            .binding(2, new.as_encoded_bytes())
             .run()?)
     }
 
@@ -450,7 +461,7 @@ impl Dao {
         Ok(self
             .0
             .prepare("DELETE FROM `hash_cache` WHERE `path` = ?1")
-            .binding(1, path.as_nbytes())
+            .binding(1, path.as_encoded_bytes())
             .run()?)
     }
 

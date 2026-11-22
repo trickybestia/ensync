@@ -22,7 +22,6 @@
 //! computing directory hashes.
 
 use std::ffi::{OsStr, OsString};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -158,11 +157,7 @@ impl DirHandle {
     }
 
     pub fn full_path_with_trailing_slash(&self) -> OsString {
-        let mut s = self.0.path.as_os_str().to_owned();
-        if OsStr::new("/") != s {
-            s.push("/");
-        }
-        s
+        self.0.path.join("").into_os_string()
     }
 
     /// Updates the hash of this directory to account for the presence or
@@ -174,21 +169,27 @@ impl DirHandle {
     pub fn toggle_file(&self, file: File) {
         let hash = {
             let mut kc = Keccak::new_sha3_256();
-            kc.update(file.0.as_bytes());
+            kc.update(file.0.as_encoded_bytes());
             kc.update(NUL);
             match *file.1 {
                 FileData::Regular(mode, _, _, ref h) => {
                     kc.update(&[0u8]);
-                    kc_update_mode(&mut kc, mode);
+                    kc_update_mode(
+                        &mut kc,
+                        if cfg!(windows) { 0o644 } else { mode },
+                    );
                     kc.update(&h[..]);
                 }
                 FileData::Directory(mode) => {
                     kc.update(&[1u8]);
-                    kc_update_mode(&mut kc, mode);
+                    kc_update_mode(
+                        &mut kc,
+                        if cfg!(windows) { 0o755 } else { mode },
+                    );
                 }
                 FileData::Symlink(ref target) => {
                     kc.update(&[2u8]);
-                    kc.update(target.as_bytes());
+                    kc.update(target.as_encoded_bytes());
                     kc.update(NUL);
                 }
                 FileData::Special => {

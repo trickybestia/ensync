@@ -16,8 +16,7 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-//! This module contains the implementation of the POSIX filesystem replica,
-//! used for the client side (typically).
+//! The client filesystem replica, shared by Unix and Windows.
 //!
 //! The bulk of the replica is represented literally on the local filesystem.
 //! Some side data (a cache of hashes as well as data to know which directories
@@ -32,9 +31,9 @@
 //! filesystem boundary, this rename optimisation does not occur; renamed files
 //! will instead be re-downloaded if the deletion occurs before the create.
 //!
-//! Not everything in this module is POSIX-specific. The SQLite layer and some
-//! of the higher-level replica logic could probably be abstracted and reused
-//! for supporting a non-POSIX operating system.
+//! Platform-specific filesystem operations are mostly in `crate::platform`.
+//! On Windows, download staging takes place in the target directory so files
+//! inherit its ACLs.
 //!
 //! - The `dao` submodule manages the SQLite database.
 //!
@@ -90,7 +89,7 @@ pub fn set_mtime_path(
     filetime::set_file_times(path, time, time)
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod timestamp_tests {
     use super::*;
     use std::os::unix::fs::{MetadataExt, symlink};

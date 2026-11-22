@@ -46,6 +46,7 @@ mod dry_run_replica;
 mod log;
 #[cfg(test)]
 mod memory_replica;
+mod platform;
 mod posix;
 mod reconcile;
 mod replica;

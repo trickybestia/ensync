@@ -23,8 +23,8 @@ use std::sync::{Arc, Mutex};
 use super::dao::*;
 use crate::defs::*;
 use crate::errors::*;
+use crate::platform::decode_os_string;
 use crate::replica::*;
-use crate::sql::{AsNBytes, AsNStr};
 
 const T_REGULAR: i64 = 0;
 const T_DIRECTORY: i64 = 1;
@@ -188,7 +188,7 @@ impl AsEntry for FileData {
                 typ: T_SYMLINK,
                 mode: 0,
                 mtime: 0,
-                content: Cow::Borrowed(target.as_nbytes()),
+                content: Cow::Borrowed(target.as_encoded_bytes()),
             },
             FileData::Special => {
                 panic!("Attempt to store Special file in ancestor replica")
@@ -200,7 +200,7 @@ impl AsEntry for FileData {
 impl<'a> AsEntry for File<'a> {
     fn as_entry(&self, dir: i64) -> FileEntry<'_> {
         let mut e = self.1.as_entry(dir);
-        e.name = Cow::Borrowed(self.0.as_nbytes());
+        e.name = Cow::Borrowed(self.0.as_encoded_bytes());
         e
     }
 }
@@ -228,13 +228,13 @@ impl Replica for AncestorReplica {
             return Ok(ret);
         }
 
-        let mut nul_error = None;
+        let mut path_error = None;
         let mut invalid_type = None;
         let mut hash_error = false;
 
         let h = dir.get_h()?;
         let exists = self.dao.lock().unwrap().list(true, h, |e| {
-            match e.name.as_nstr() {
+            match decode_os_string(e.name.into_owned()) {
                 Ok(name) => {
                     if let Some(d) = match e.typ {
                         T_REGULAR => {
@@ -255,15 +255,15 @@ impl Replica for AncestorReplica {
                         T_DIRECTORY => {
                             Some(FileData::Directory(e.mode as FileMode))
                         }
-                        T_SYMLINK => match e.content.as_nstr() {
-                            Ok(target) => {
-                                Some(FileData::Symlink(target.to_owned()))
+                        T_SYMLINK => {
+                            match decode_os_string(e.content.into_owned()) {
+                                Ok(target) => Some(FileData::Symlink(target)),
+                                Err(err) => {
+                                    path_error = Some(err);
+                                    None
+                                }
                             }
-                            Err(ne) => {
-                                nul_error = Some(ne);
-                                None
-                            }
-                        },
+                        }
                         t => {
                             invalid_type = Some(t);
                             None
@@ -271,11 +271,11 @@ impl Replica for AncestorReplica {
                     }
                     /* then */
                     {
-                        ret.push((name.to_owned(), d));
+                        ret.push((name, d));
                     }
                 }
-                Err(ne) => {
-                    nul_error = Some(ne);
+                Err(err) => {
+                    path_error = Some(err);
                 }
             }
         })?;
@@ -284,8 +284,8 @@ impl Replica for AncestorReplica {
             Err(ErrorKind::InvalidAncestorFileType(it).into())
         } else if hash_error {
             Err(ErrorKind::InvalidHash.into())
-        } else if let Some(nul_error) = nul_error {
-            Err(nul_error.into())
+        } else if let Some(err) = path_error {
+            Err(err.into())
         } else if !exists {
             Err(ErrorKind::NotFound.into())
         } else {
@@ -302,8 +302,8 @@ impl Replica for AncestorReplica {
         let h = dir.get_h()?;
         match self.dao.lock().unwrap().rename(
             h,
-            old.as_nbytes(),
-            new.as_nbytes(),
+            old.as_encoded_bytes(),
+            new.as_encoded_bytes(),
         )? {
             RenameStatus::Ok => Ok(()),
             RenameStatus::SourceNotFound => Err(ErrorKind::NotFound.into()),
@@ -374,7 +374,7 @@ impl Replica for AncestorReplica {
             .dao
             .lock()
             .unwrap()
-            .get_by_name(h, subdir.as_nbytes())?
+            .get_by_name(h, subdir.as_encoded_bytes())?
         {
             if T_DIRECTORY == f.typ {
                 Ok(DirHandle::Real(RealDir(f.id)))
@@ -426,12 +426,20 @@ impl NullTransfer for AncestorReplica {
 impl Condemn for AncestorReplica {
     fn condemn(&self, dir: &mut DirHandle, name: &OsStr) -> Result<()> {
         let h = dir.get_h()?;
-        Ok(self.dao.lock().unwrap().condemn(h, name.as_nbytes())?)
+        Ok(self
+            .dao
+            .lock()
+            .unwrap()
+            .condemn(h, name.as_encoded_bytes())?)
     }
 
     fn uncondemn(&self, dir: &mut DirHandle, name: &OsStr) -> Result<()> {
         let h = dir.get_h()?;
-        Ok(self.dao.lock().unwrap().uncondemn(h, name.as_nbytes())?)
+        Ok(self
+            .dao
+            .lock()
+            .unwrap()
+            .uncondemn(h, name.as_encoded_bytes())?)
     }
 }
 

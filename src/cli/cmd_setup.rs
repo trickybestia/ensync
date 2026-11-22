@@ -21,12 +21,14 @@ use std::env;
 use std::ffi::OsStr;
 use std::fs;
 use std::io::{self, BufRead, Read, Write};
+#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::process;
 use std::str::FromStr;
 use std::sync::Arc;
 
+#[cfg(unix)]
 use tempfile::NamedTempFile;
 use toml;
 
@@ -110,10 +112,10 @@ Should it be created too? ",
 
     let storage: Arc<dyn Storage>;
     let server_spec: String;
-    if let Some((host, remote_path)) = remote
-        .to_str()
-        .and_then(|s| s.find(':').map(|ix| (&s[..ix], &s[ix + 1..])))
-    {
+    if let Some((host, remote_path)) = ssh_destination(remote) {
+        if cfg!(windows) {
+            return Err("Automatic SSH setup is not supported on Windows; configure a shell: server manually".into());
+        }
         confirm(&format!(
             "This will set up the following configuration:
 Files synced to/from: {}
@@ -238,7 +240,7 @@ Does this look reasonable? ",
 path = "\u0000"
 server = "path:\u0000"
 server_root = "/"
-passphrase = "file:/dev/null"
+passphrase = "prompt"
 compression = "none"
 
 [[rules.root.files]]
@@ -733,6 +735,22 @@ Should it be created too? ",
     Ok(())
 }
 
+fn ssh_destination(path: &Path) -> Option<(&str, &str)> {
+    if matches!(
+        path.components().next(),
+        Some(std::path::Component::Prefix(_))
+    ) {
+        return None; // Drive letters and UNC prefixes are local paths on Windows.
+    }
+    path.to_str()?.split_once(':')
+}
+
+#[cfg(windows)]
+fn unix_permissions_survive<P: AsRef<Path>>(_: P) -> Result<bool> {
+    Ok(false)
+}
+
+#[cfg(unix)]
 fn unix_permissions_survive<P: AsRef<Path>>(path: P) -> Result<bool> {
     let f = NamedTempFile::new_in(path)?;
     // Try to set the mode to 0o111. For vfat, the execute bits are always set,
@@ -751,6 +769,20 @@ fn unix_permissions_survive<P: AsRef<Path>>(path: P) -> Result<bool> {
 #[cfg(test)]
 mod test {
     use super::shell_escape;
+
+    #[cfg(windows)]
+    #[test]
+    fn drive_and_unc_destinations_are_not_ssh() {
+        use super::*;
+        for path in [r"C:\data\store", "D:/data/store", r"\\server\share\store"]
+        {
+            assert_eq!(None, ssh_destination(Path::new(path)));
+        }
+        assert_eq!(
+            Some(("user@host", "store")),
+            ssh_destination(Path::new("user@host:store"))
+        );
+    }
 
     #[test]
     fn shell_escape_works() {

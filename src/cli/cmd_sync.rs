@@ -23,7 +23,6 @@ use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
 use std::io::{self, Read, Write, stderr, stdout};
-use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, Mutex, RwLock};
@@ -75,16 +74,14 @@ impl AsPath for OsStr {
 struct PathDisplay<'a, T>(&'a Path, T);
 impl<'a> fmt::Display for PathDisplay<'a, &'a OsStr> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            self.1.as_path().strip_prefix(self.0).unwrap().display()
-        )
+        let path = self.1.as_path();
+        write!(f, "{}", path.strip_prefix(self.0).unwrap_or(path).display())
     }
 }
 impl<'a> fmt::Display for PathDisplay<'a, (&'a OsStr, &'a OsStr)> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let prefix = (self.1).0.as_path().strip_prefix(self.0).unwrap();
+        let path = (self.1).0.as_path();
+        let prefix = path.strip_prefix(self.0).unwrap_or(path);
         if prefix.components().next().is_some() {
             write!(f, "{}/{}", prefix.display(), (self.1).1.as_path().display())
         } else {
@@ -858,7 +855,7 @@ pub fn run(
     let level = max(FATAL as i32, min(255, nominal_log_level)) as LogLevel;
 
     let log = LoggerImpl {
-        client_root: config.client_root.to_owned(),
+        client_root: client_replica.root_path().to_owned(),
         verbose_level: level,
         include_ops_under_opped_directory,
         itemise_level: if !itemise {
@@ -907,7 +904,7 @@ pub fn run(
             spin,
         )
     } else {
-        let watch_handle = Arc::new(WatchHandle::new()?);
+        let watch_handle = Arc::new(WatchHandle::default());
         if let Some(seconds) = watch {
             let debounce = Duration::new(seconds, 0);
 
@@ -1112,15 +1109,23 @@ fn run_sync<
 }
 
 fn check_for_copied_private_dir(private_dir: &Path) -> Result<()> {
-    const FSID_VERSION: &str = "FSID2:";
+    const FSID_VERSION: &str = if cfg!(windows) {
+        "FSID-WIN1:"
+    } else {
+        "FSID2:"
+    };
 
     let ancestor_path = private_dir.join("ancestor.sqlite");
-    let expected_content = match ancestor_path.metadata() {
-        Err(_) => return Ok(()),
+    let expected_content = match crate::platform::file_id(&ancestor_path) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err.into()),
+        Ok((volume, inode)) if cfg!(windows) => {
+            format!("{FSID_VERSION}{volume}:{inode}")
+        }
         // In an older version, we also included md.dev() here. This has been
         // removed since the device IDs are not stable on all systems (i.e.
         // different boots can result in different ids for the same files).
-        Ok(md) => format!("{}{}", FSID_VERSION, md.ino()),
+        Ok((_, inode)) => format!("{FSID_VERSION}{inode}"),
     };
 
     let marker_path = private_dir.join("fsid");

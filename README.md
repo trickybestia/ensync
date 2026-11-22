@@ -56,10 +56,9 @@ Supported platforms:
 - In general, any POSIX-like system that Rust supports should be able to run
   Ensync.
 
-- Windows is currently *not* supported. While not inherently impossible,
-  Windows's filesystem quirks make support rather difficult to implement. There
-  are currently no plans to implement such support, but contributions would be
-  welcome.
+- 64-bit Windows supports syncing regular files and directories, using either
+  local encrypted storage or a server subprocess. See [Windows](#windows) for
+  build instructions and filesystem limitations.
 
 ### Status
 
@@ -96,6 +95,37 @@ there.
 After that, you need to set up configuration and if needed initialise the
 remote storage. This can either be done automatically with `ensync setup`, or
 by manually doing each step.
+
+### Windows
+
+With the Rust MSVC toolchain and Visual Studio Build Tools (Desktop development
+with C++) installed, open an x64 Developer PowerShell or Command Prompt. From
+this checkout run `cargo build --release --locked`. The binary is
+`target\release\ensync.exe`.
+
+For example, from PowerShell, after creating `C:\Data\files`:
+
+```powershell
+.\target\release\ensync.exe setup 'C:\Data\ensync-config' 'C:\Data\files' 'D:\EncryptedStore'
+.\target\release\ensync.exe sync 'C:\Data\ensync-config'
+```
+
+- `setup` accepts local storage paths on Windows, including drive-letter paths.
+  To connect over SSH, use [manual setup](#manual-setup) with a `shell:` server
+  command, for example `shell:ssh user@host ensync server ensync-data`. On
+  Windows, both server and passphrase `shell:` commands use `cmd.exe` syntax.
+- Use TOML literal strings for Windows paths, e.g. `path = 'C:\Data\files'`,
+  or escape backslashes in double-quoted strings. Logical server paths always
+  use `/`, even with a Windows client or server.
+- Windows ACLs and POSIX mode bits are not synced. Newly downloaded files and
+  directories inherit local permissions. Local symbolic links, junctions,
+  and other reparse points are not traversed or uploaded, and remote symbolic
+  links cannot be materialized on Windows.
+- Use Unicode filenames valid on Windows on both sides. Windows device names,
+  trailing dots or spaces, and names differing only by case may not be usable
+  on Windows. `internal.ensync` and the `ensync_tmp_` filename prefix are
+  reserved for Ensync. Open or read-only files may prevent an update or
+  deletion; resolve the restriction and retry.
 
 ### Automatic Setup
 

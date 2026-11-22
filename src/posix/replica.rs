@@ -20,9 +20,8 @@ use std::collections::{HashMap, HashSet};
 use std::ffi::{OsStr, OsString};
 use std::fs;
 use std::io::{self, Read, Seek, Write};
-use std::os::unix;
-use std::os::unix::fs::DirBuilderExt;
-use std::os::unix::prelude::*;
+#[cfg(unix)]
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -39,21 +38,26 @@ use crate::block_xfer::{
 use crate::block_xfer::{blocks_to_stream, hash_block, stream_to_blocks};
 use crate::defs::*;
 use crate::errors::*;
-use crate::posix;
 use crate::posix::dao::{Dao, InodeStatus};
 use crate::posix::dir::*;
 use crate::replica::*;
+use crate::{platform, posix};
 
 type Inode = (u64, u64);
 
-trait MetadataExt2 {
-    fn inode(&self) -> Inode;
-}
-
-impl<T: MetadataExt> MetadataExt2 for T {
-    fn inode(&self) -> Inode {
-        (self.dev(), self.ino())
-    }
+fn inode_status(path: &Path, md: &fs::Metadata) -> io::Result<InodeStatus> {
+    #[cfg(unix)]
+    let ino = {
+        let _ = path;
+        md.ino()
+    };
+    #[cfg(windows)]
+    let ino = platform::file_id(path)?.1;
+    Ok(InodeStatus {
+        ino,
+        mtime: platform::cache_mtime(md),
+        size: md.len(),
+    })
 }
 
 struct Config {
@@ -120,16 +124,16 @@ fn metadata_to_fd<D: OnDao>(
 ) -> Result<FileData> {
     let typ = md.file_type();
 
-    // Treat the `internal.ensync` directory as if it were a Special file so
-    // that it can not be affected by the syncing process. (Recursing into it
-    // could cause many problems, since it is by nature very live during the
-    // sync process.)
-    if Some(OsStr::new(PRIVATE_DIR_NAME)) == path.file_name() {
+    // Protect internal state, staging files, and Windows reparse points from
+    // the sync process, and never recurse into them.
+    if path.file_name().is_some_and(is_internal_name)
+        || platform::is_reparse_point(md)
+    {
         return Ok(FileData::Special);
     }
 
     if typ.is_dir() {
-        Ok(FileData::Directory(md.mode() & 0o7777))
+        Ok(FileData::Directory(platform::file_mode(md)))
     } else if typ.is_symlink() {
         let target = fs::read_link(path)
             .chain_err(|| {
@@ -138,23 +142,18 @@ fn metadata_to_fd<D: OnDao>(
             .into_os_string();
         Ok(FileData::Symlink(target))
     } else if typ.is_file() {
-        let mode = md.mode() & 0o7777;
-        let mtime = md.mtime();
-        let ino = md.ino();
-        let size = md.size();
-        let hash = get_or_compute_hash(
-            path,
-            dao,
-            &InodeStatus { ino, mtime, size },
-            calc_hash_if_unknown,
-            config,
-        )
-        .chain_err(|| {
-            format!(
-                "Failed to compute hash of regular file '{}'",
-                path.display()
-            )
-        })?;
+        let mode = platform::file_mode(md);
+        let mtime = platform::mtime(md);
+        let stat = inode_status(path, md)?;
+        let size = stat.size;
+        let hash =
+            get_or_compute_hash(path, dao, &stat, calc_hash_if_unknown, config)
+                .chain_err(|| {
+                    format!(
+                        "Failed to compute hash of regular file '{}'",
+                        path.display()
+                    )
+                })?;
         Ok(FileData::Regular(mode, size, mtime, hash))
     } else {
         Ok(FileData::Special)
@@ -206,26 +205,25 @@ fn get_or_compute_hash<D: OnDao>(
     Ok(blocklist.total)
 }
 
-/// Return Err if `name` has special significance on UNIX, eg, is "." or "..",
-/// or contains a `/` or NUL character.
-///
-/// This isn't strictly necessary. We do it as a safety precaution, so that
-/// corrupted server replicas (accidental or otherwise) cannot "escape" the
-/// sync root by having ".." as a literal directory, for example.
+fn is_internal_name(name: &OsStr) -> bool {
+    if cfg!(windows) {
+        let bytes = name.as_encoded_bytes();
+        bytes.eq_ignore_ascii_case(PRIVATE_DIR_NAME.as_bytes())
+            // Windows stages downloads in the target directory. Never upload
+            // a staging file left behind after an unclean shutdown.
+            || bytes.get(..INVASIVE_TMP_PREFIX.len()).is_some_and(|prefix| {
+                prefix.eq_ignore_ascii_case(INVASIVE_TMP_PREFIX.as_bytes())
+            })
+    } else {
+        name == OsStr::new(PRIVATE_DIR_NAME)
+    }
+}
+
 fn assert_sane_filename(name: &OsStr) -> Result<()> {
-    if name == OsStr::new(".") || name == OsStr::new("..") {
+    platform::check_filename(name)?;
+    if cfg!(windows) && is_internal_name(name) {
         return Err(ErrorKind::BadFilename(name.to_owned()).into());
     }
-
-    if name.is_empty() {
-        return Err(ErrorKind::BadFilename(name.to_owned()).into());
-    }
-
-    let s = name.to_string_lossy();
-    if s.contains('/') || s.contains('\x00') {
-        return Err(ErrorKind::BadFilename(name.to_owned()).into());
-    }
-
     Ok(())
 }
 
@@ -233,6 +231,10 @@ impl Replica for PosixReplica {
     type Directory = DirHandle;
     type TransferIn = Option<ContentAddressableSource>;
     type TransferOut = Option<Box<dyn StreamSource>>;
+
+    fn tracks_unix_mode(&self) -> bool {
+        cfg!(unix)
+    }
 
     fn is_dir_dirty(&self, dir: &DirHandle) -> bool {
         return !self
@@ -244,6 +246,9 @@ impl Replica for PosixReplica {
     }
 
     fn set_dir_clean(&self, dir: &DirHandle) -> Result<bool> {
+        if cfg!(windows) && dir.is_synth() {
+            return Ok(true);
+        }
         self.dao
             .lock()
             .unwrap()
@@ -263,15 +268,14 @@ impl Replica for PosixReplica {
     fn root(&self) -> Result<DirHandle> {
         Ok(DirHandle::root(
             self.config.root.clone(),
-            path_metadata(&self.config.root)
+            platform::file_id(&self.config.root)
                 .chain_err(|| {
                     format!(
-                        "Error getting metadata \
-                                                  of '{}'",
+                        "Error identifying '{}'",
                         self.config.root.display()
                     )
                 })?
-                .dev(),
+                .0,
         ))
     }
 
@@ -279,6 +283,16 @@ impl Replica for PosixReplica {
         let mut ret = Vec::new();
 
         dir.reset_hash();
+        if cfg!(windows) {
+            // Synthetic directories are logical only. Their names may not be
+            // usable locally, or may alias an existing Windows directory.
+            if dir.is_synth() {
+                return Ok(ret);
+            }
+            if platform::is_reparse_point(&path_metadata(dir.path())?) {
+                return Err(ErrorKind::NotADirectory.into());
+            }
+        }
         let read_result = fs::read_dir(dir.full_path());
         let entries = match read_result {
             Ok(entries) => entries,
@@ -313,6 +327,7 @@ impl Replica for PosixReplica {
                     entry.path().display()
                 )
             })?;
+            platform::check_encoding(&name)?;
             let fd = metadata_to_fd(
                 &entry.path(),
                 &md,
@@ -357,6 +372,7 @@ impl Replica for PosixReplica {
         // Get the file data representation so we can remove/add it to the sum
         // hash of the directory state.
         let old_path = dir.child(old);
+        platform::check_exact_name(&old_path)?;
         let old_md = path_metadata(&old_path)?;
         let fd = metadata_to_fd(
             &old_path,
@@ -453,13 +469,12 @@ impl Replica for PosixReplica {
             ) if h1 == h2 => {
                 self.check_matches(&path, old)?;
                 if m1 != m2 {
-                    fs::set_permissions(&path, fs::Permissions::from_mode(m2))
-                        .chain_err(|| {
-                            format!(
-                                "Error setting permissions on '{}'",
-                                path.display()
-                            )
-                        })?;
+                    platform::set_mode(&path, m2).chain_err(|| {
+                        format!(
+                            "Error setting permissions on '{}'",
+                            path.display()
+                        )
+                    })?;
                 }
                 if let (
                     &FileData::Regular(_, _, t1, _),
@@ -470,11 +485,12 @@ impl Replica for PosixReplica {
                     posix::set_mtime_path(&path, t2).chain_err(|| {
                         format!("Error setting mtime on '{}'", path.display())
                     })?;
-                    let _ = self
-                        .dao
-                        .lock()
-                        .unwrap()
-                        .update_cache_mtime(path.as_os_str(), t2);
+                    if let Ok(md) = fs::symlink_metadata(&path) {
+                        let _ = self.dao.lock().unwrap().update_cache_mtime(
+                            path.as_os_str(),
+                            platform::cache_mtime(&md),
+                        );
+                    }
                 }
                 dir.toggle_file(File(name, old));
                 dir.toggle_file(File(name, new));
@@ -534,11 +550,16 @@ impl Replica for PosixReplica {
         assert_sane_filename(subdir)?;
 
         let path = dir.child(subdir);
+        platform::check_exact_name(&path)?;
         let md = path_metadata(&path)?;
-        if !md.file_type().is_dir() {
+        if !md.file_type().is_dir() || platform::is_reparse_point(&md) {
             Err(ErrorKind::NotADirectory.into())
         } else {
-            Ok(dir.subdir(subdir, None, md.dev()))
+            #[cfg(unix)]
+            let dev = md.dev();
+            #[cfg(windows)]
+            let dev = platform::file_id(&path)?.0;
+            Ok(dir.subdir(subdir, None, dev))
         }
     }
 
@@ -553,9 +574,17 @@ impl Replica for PosixReplica {
 
     fn rmdir(&self, subdir: &mut DirHandle) -> Result<()> {
         let dir = subdir.parent().cloned().ok_or(ErrorKind::RmdirRoot)?;
+        if cfg!(windows) && subdir.is_synth() {
+            return Ok(());
+        }
+        assert_sane_filename(subdir.name())?;
         let path = dir.child(subdir.name());
         match fs::symlink_metadata(&path) {
             Ok(md) => {
+                platform::check_exact_name(&path)?;
+                if platform::is_reparse_point(&md) {
+                    return Err(ErrorKind::NotADirectory.into());
+                }
                 match fs::remove_dir(&path) {
                     Ok(()) => {}
                     Err(ref e) if io::ErrorKind::NotFound == e.kind() => {}
@@ -565,7 +594,7 @@ impl Replica for PosixReplica {
                 }
                 dir.toggle_file(File(
                     path.file_name().unwrap(),
-                    &FileData::Directory(md.mode() & 0o7777),
+                    &FileData::Directory(platform::file_mode(&md)),
                 ));
             }
             Err(ref e) if io::ErrorKind::NotFound == e.kind() => {}
@@ -585,8 +614,14 @@ impl Replica for PosixReplica {
     ) -> Result<Option<Box<dyn StreamSource>>> {
         Ok(match *file.1 {
             FileData::Regular(mode, _, _, expected_hash) => {
+                assert_sane_filename(file.0)?;
+                let path = dir.child(file.0);
+                platform::check_exact_name(&path)?;
+                if platform::is_reparse_point(&path_metadata(&path)?) {
+                    return Err(ErrorKind::ExpectationNotMatched.into());
+                }
                 Some(Box::new(FileStreamSource {
-                    file: fs::File::open(dir.child(file.0))?,
+                    file: fs::File::open(path)?,
                     dir: dir.clone(),
                     name: file.0.to_owned(),
                     mode,
@@ -656,6 +691,7 @@ impl Replica for PosixReplica {
                                 entry.path().display()
                             )
                         })?;
+                        platform::check_encoding(&name)?;
                         let fd = metadata_to_fd(
                             &entry.path(),
                             &md,
@@ -694,6 +730,10 @@ impl Replica for PosixReplica {
 }
 
 impl PosixReplica {
+    pub fn root_path(&self) -> &Path {
+        &self.config.root
+    }
+
     /// Creates a new POSIX replica.
     ///
     /// `root` is the root directory for syncing purposes. `private_dir` is the
@@ -707,6 +747,11 @@ impl PosixReplica {
         block_size: usize,
     ) -> Result<Self> {
         let root = root.as_ref();
+        #[cfg(windows)]
+        let absolute_root = std::path::absolute(root)?;
+        #[cfg(windows)]
+        let root = absolute_root.as_path();
+        platform::check_encoding(root.as_os_str())?;
         let private_dir = private_dir.as_ref();
 
         let dao = Dao::open(
@@ -716,7 +761,7 @@ impl PosixReplica {
         )?;
         let cache_generation = dao.next_generation()?;
 
-        let private_dir_dev = path_metadata(private_dir)?.dev();
+        let private_dir_dev = platform::file_id(private_dir)?.0;
 
         Ok(PosixReplica {
             config: Arc::new(Config {
@@ -737,10 +782,10 @@ impl PosixReplica {
         let mut opts = tempfile::Builder::new();
         opts.prefix(INVASIVE_TMP_PREFIX);
 
-        // If possible, create temporary files non-invasively. But if it's on a
-        // different device, we have no choice but to create them in the target
-        // directory.
-        if self.config.private_dir_dev == dir.dev() {
+        // On Unix create temporary files non-invasively if the rename stays
+        // on the same filesystem. On Windows, stage in the destination so
+        // the file inherits its ACL rather than the private directory's ACL.
+        if cfg!(unix) && self.config.private_dir_dev == dir.dev() {
             opts.tempfile_in(&self.config.private_dir)
         } else {
             opts.tempfile_in(dir.path())
@@ -788,7 +833,11 @@ impl PosixReplica {
         mode: FileMode,
     ) -> io::Result<(fs::File, PathBuf)> {
         let mut opts = fs::OpenOptions::new();
-        opts.read(true).write(true).mode(mode).create_new(true);
+        opts.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        opts.mode(mode);
+        #[cfg(windows)]
+        let _ = mode;
 
         self.scratch_file(|path| opts.open(path))
     }
@@ -855,23 +904,17 @@ impl PosixReplica {
             FileData::Directory(mode) => {
                 before_establish()?;
                 let path = dir.child(source.0);
-                fs::DirBuilder::new().mode(mode).create(&path).chain_err(
-                    || {
-                        format!(
-                            "Error creating directory at '{}'",
-                            path.display()
-                        )
-                    },
-                )?;
+                platform::dir_builder(mode).create(&path).chain_err(|| {
+                    format!("Error creating directory at '{}'", path.display())
+                })?;
                 // mkdir() restricts the mode via umask, so we need to make
                 // another call to get the mode we actually want.
-                fs::set_permissions(&path, fs::Permissions::from_mode(mode))
-                    .chain_err(|| {
-                        format!(
-                            "Error setting permissions on directory '{}'",
-                            path.display()
-                        )
-                    })?;
+                platform::set_mode(&path, mode).chain_err(|| {
+                    format!(
+                        "Error setting permissions on directory '{}'",
+                        path.display()
+                    )
+                })?;
                 Ok(source.1.clone())
             }
 
@@ -884,7 +927,7 @@ impl PosixReplica {
                     .chain_err(|| "Failed to create temporary name")?
                     .path()
                     .to_owned();
-                unix::fs::symlink(target, &scratch_path).chain_err(|| {
+                platform::symlink(target, &scratch_path).chain_err(|| {
                     format!(
                         "Failed to create temporary symlink at '{}'",
                         scratch_path.display()
@@ -928,16 +971,14 @@ impl PosixReplica {
                     let new_path = dir.child(source.0);
                     // Atomically put into place after setting the mode and
                     // mtime
-                    fs::set_permissions(
-                        &scratch_path,
-                        fs::Permissions::from_mode(mode),
-                    )
-                    .chain_err(|| {
-                        format!(
-                            "Failed to set permissions on '{}'",
-                            scratch_path.display()
-                        )
-                    })?;
+                    platform::set_mode(&scratch_path, mode).chain_err(
+                        || {
+                            format!(
+                                "Failed to set permissions on '{}'",
+                                scratch_path.display()
+                            )
+                        },
+                    )?;
                     posix::set_mtime(&scratch_file, time).chain_err(|| {
                         format!(
                             "Failed to set mtime on '{}'",
@@ -947,6 +988,7 @@ impl PosixReplica {
                     scratch_file.sync_all().chain_err(|| {
                         format!("Error fsync'ing '{}'", new_path.display())
                     })?;
+                    drop(scratch_file);
                     scratch_path.persist(&new_path).chain_err(|| {
                         format!("Failed to persist '{}'", new_path.display())
                     })?;
@@ -988,6 +1030,11 @@ impl PosixReplica {
     ///
     /// If renaming the file fails, it is instead simply deleted.
     fn hide_file(&self, old_path: &Path) -> Result<()> {
+        if cfg!(windows) {
+            // Do not retain a copy under a different directory's ACL.
+            fs::remove_file(old_path)?;
+            return Ok(());
+        }
         let (_, new_path) = self.scratch_regular(0o600).chain_err(|| {
             format!(
                 "Failed to generate path to which to move \
@@ -1162,16 +1209,14 @@ impl PosixReplica {
         block_size: usize,
     ) -> Result<()> {
         let md = path_metadata(path)?;
-        let mtime = md.mtime();
-        let ino = md.ino();
-        let size = md.size();
+        let stat = inode_status(path, &md)?;
 
         self.dao.lock().unwrap().cache_file_hashes(
             path.as_os_str(),
             &bl.total,
             &bl.blocks[..],
             block_size,
-            &InodeStatus { mtime, ino, size },
+            &stat,
             self.config.cache_generation,
         )?;
         Ok(())
@@ -1182,13 +1227,17 @@ impl PosixReplica {
     /// If it matches, returns `Ok`. Otherwise, or if any error occurs, returns
     /// `Err`.
     fn check_matches(&self, path: &Path, fd: &FileData) -> Result<()> {
-        let curr_fd = metadata_to_fd(
+        platform::check_exact_name(path)?;
+        let mut curr_fd = metadata_to_fd(
             path,
             &path_metadata(path)?,
             &*self.dao,
             false,
             &self.config,
         )?;
+        if cfg!(windows) {
+            curr_fd.transrich_unix_mode(fd);
+        }
         if !curr_fd.matches(fd) {
             Err(ErrorKind::ExpectationNotMatched.into())
         } else {
@@ -1248,12 +1297,9 @@ impl StreamSource for FileStreamSource {
     fn finish(&mut self, blocks: &BlockList) -> Result<()> {
         let path = self.dir.child(&self.name);
         // Make a best effort to update the cache
-        if let Ok(md) = fs::symlink_metadata(&path) {
-            let stat = InodeStatus {
-                mtime: md.mtime(),
-                ino: md.ino(),
-                size: md.size(),
-            };
+        if let Ok(stat) =
+            fs::symlink_metadata(&path).and_then(|md| inode_status(&path, &md))
+        {
             let _ = self.dao.lock().unwrap().cache_file_hashes(
                 path.as_os_str(),
                 &blocks.total,
@@ -1281,14 +1327,9 @@ impl StreamSource for FileStreamSource {
 
 impl WatcherStatus {
     fn watch(&mut self, path: OsString) -> Result<()> {
-        let inode = fs::metadata(&path)
-            .chain_err(|| {
-                format!(
-                    "Error getting inode of '{}'",
-                    Path::new(&path).display()
-                )
-            })?
-            .inode();
+        let dir: PathBuf = Path::new(&path).components().collect();
+        let inode = platform::file_id(&dir)
+            .chain_err(|| format!("Error identifying '{}'", dir.display()))?;
 
         self.watched.insert(inode, path);
         Ok(())
@@ -1334,10 +1375,10 @@ impl Watch for PosixReplica {
                 ) -> bool {
                     let _ = path.pop();
 
-                    if let Ok(md) = fs::metadata(&path) {
+                    if let Ok(inode) = platform::file_id(&path) {
                         let mut lock = watcher.lock().unwrap();
-                        if lock.watched.contains_key(&md.inode()) {
-                            lock.dirty.insert(md.inode());
+                        if lock.watched.contains_key(&inode) {
+                            lock.dirty.insert(inode);
                             true
                         } else {
                             false
@@ -1379,7 +1420,100 @@ impl Watch for PosixReplica {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
+mod windows_tests {
+    use super::*;
+
+    #[test]
+    fn windows_rejects_ambiguous_names() {
+        let dirs = tempfile::tempdir().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let replica =
+            PosixReplica::new(dirs.path(), private.path(), b"test", 1024)
+                .unwrap();
+        let mut dir = replica.root().unwrap();
+        for name in [
+            r"..\escape",
+            r"C:\escape",
+            "file:stream",
+            "NUL.txt",
+            "COM¹",
+            "dir.",
+            "dir ",
+            "INTERNAL.ENSYNC",
+        ] {
+            let name = OsStr::new(name);
+            assert!(
+                replica
+                    .create(
+                        &mut dir,
+                        File(name, &FileData::Directory(0o755)),
+                        None
+                    )
+                    .is_err(),
+                "{name:?}"
+            );
+        }
+        fs::create_dir(dirs.path().join("Original")).unwrap();
+        let alias = OsStr::new("original");
+        assert!(replica.chdir(&dir, alias).is_err());
+        assert!(
+            replica
+                .rename(&mut dir, alias, OsStr::new("renamed"))
+                .is_err()
+        );
+        // In particular a synthetic handle cannot traverse a case alias.
+        let mut synthetic = replica.synthdir(&mut dir, alias, 0o755);
+        assert!(replica.list(&mut synthetic).unwrap().is_empty());
+        assert!(
+            replica
+                .create(
+                    &mut synthetic,
+                    File(OsStr::new("other"), &FileData::Directory(0o755)),
+                    None
+                )
+                .is_err()
+        );
+        assert!(!dirs.path().join("Original/other").exists());
+    }
+
+    #[test]
+    fn windows_watch_reports_changes_in_clean_directories() {
+        use std::time::Instant;
+
+        let dirs = tempfile::tempdir().unwrap();
+        let private = tempfile::tempdir().unwrap();
+        let mut replica =
+            PosixReplica::new(dirs.path(), private.path(), b"test", 1024)
+                .unwrap();
+        let watch = Arc::new(WatchHandle::default());
+        fs::create_dir(dirs.path().join("nested")).unwrap();
+        replica
+            .watch(Arc::downgrade(&watch), Duration::ZERO)
+            .unwrap();
+        let mut root = replica.root().unwrap();
+        replica.list(&mut root).unwrap();
+        assert!(replica.set_dir_clean(&root).unwrap());
+        let mut nested = replica.chdir(&root, OsStr::new("nested")).unwrap();
+        replica.list(&mut nested).unwrap();
+        assert!(replica.set_dir_clean(&nested).unwrap());
+        fs::write(dirs.path().join("nested/changed.txt"), b"new content")
+            .unwrap();
+        let until = Instant::now() + Duration::from_secs(10);
+        while !watch.check_dirty() {
+            assert!(
+                Instant::now() < until,
+                "no Windows filesystem notification"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        replica.prepare(PrepareType::Watched).unwrap();
+        assert!(replica.is_dir_dirty(&root));
+        assert!(replica.is_dir_dirty(&nested));
+    }
+}
+
+#[cfg(all(test, unix))]
 mod test {
     use std::collections::HashMap;
     use std::fs;
@@ -2638,7 +2772,7 @@ mod test {
     fn watch_notices_when_dir_changed() {
         let (rootdir, _private, mut replica) = new_simple();
 
-        let watch = Arc::new(WatchHandle::new().unwrap());
+        let watch = Arc::new(WatchHandle::default());
         watch.check_dirty();
         watch.check_context_lost();
         assert!(!watch.check_dirty());

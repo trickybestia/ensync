@@ -116,10 +116,8 @@ pub fn open_server_storage(
             // way to stop it.
             //
             // The former option seems the lesser of these two evils.
-            let mut process = process::Command::new("/bin/sh");
+            let mut process = crate::platform::shell_command(command);
             process
-                .arg("-c")
-                .arg(command)
                 .stderr(process::Stdio::inherit())
                 .stdin(process::Stdio::piped())
                 .stdout(process::Stdio::piped());

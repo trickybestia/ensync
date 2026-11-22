@@ -78,7 +78,7 @@ use std::ffi::{OsStr, OsString};
 // This is another place where we need to be able to convert between byte
 // arrays and `OsStr[ing]` which will need some attention for a hypothetical
 // Windows port.
-use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use crate::platform::{check_encoding, decode_os_string};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -371,8 +371,8 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         path
     }
 
-    fn v0_entry_to_filedata(&self, e: &v0::Entry) -> Option<FileData> {
-        match *e {
+    fn v0_entry_to_filedata(&self, e: &v0::Entry) -> Result<Option<FileData>> {
+        Ok(match *e {
             v0::Entry::Directory { mode, .. } => {
                 Some(FileData::Directory(mode))
             }
@@ -384,11 +384,11 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                 ..
             } => Some(FileData::Regular(mode, size, time, hmac)),
             v0::Entry::Symlink { ref target, .. } => {
-                Some(FileData::Symlink(OsString::from_vec(target.to_vec())))
+                Some(FileData::Symlink(decode_os_string(target.to_vec())?))
             }
             v0::Entry::Unknown(..) => Some(FileData::Special),
             v0::Entry::Deleted { .. } => None,
-        }
+        })
     }
 
     /// Like `Replica::list()`
@@ -396,17 +396,17 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         let mut content = self.content.lock().unwrap();
         self.refresh_if_needed(&mut content)?;
         content.list_up_to_date = true;
-        Ok(content
+        content
             .files
             .iter()
             .map(|(name, value)| {
-                (
+                Ok((
                     name.to_owned(),
-                    self.v0_entry_to_filedata(value)
+                    self.v0_entry_to_filedata(value)?
                         .expect("Entry::Deleted in content.files"),
-                )
+                ))
             })
-            .collect())
+            .collect()
     }
 
     /// Remove a subdirectory of this directory for which `test` returns
@@ -546,9 +546,9 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                             Some(FileData::Directory(mode))
                         }
                         Some(v0::Entry::Symlink { target, .. }) => {
-                            Some(FileData::Symlink(OsString::from_vec(
+                            Some(FileData::Symlink(decode_os_string(
                                 target.to_vec(),
-                            )))
+                            )?))
                         }
                         Some(&v0::Entry::Regular {
                             mode,
@@ -613,10 +613,13 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                             unknown: UnknownFields::default(),
                         }
                     }
-                    Some(FileData::Symlink(target)) => v0::Entry::Symlink {
-                        target: target.clone().into_vec(),
-                        unknown: UnknownFields::default(),
-                    },
+                    Some(FileData::Symlink(target)) => {
+                        check_encoding(target)?;
+                        v0::Entry::Symlink {
+                            target: target.as_encoded_bytes().to_vec(),
+                            unknown: UnknownFields::default(),
+                        }
+                    }
                     Some(&FileData::Regular(mode, size, time, _)) => {
                         let mut xfer =
                             xfer.as_mut().ok_or(ErrorKind::MissingXfer)?;
@@ -655,7 +658,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
                     }
                 };
 
-                let ret = self.v0_entry_to_filedata(&new_entry);
+                let ret = self.v0_entry_to_filedata(&new_entry)?;
                 self.add_entry(tx, content, name.to_owned(), new_entry)?;
                 Ok(Some(ret))
             })
@@ -904,8 +907,8 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
             &mut data_reader,
             &mut new_content.prev_hmac,
         )? {
-            for entry in entries {
-                new_content.apply_entry(entry);
+            for (name, entry) in entries {
+                new_content.apply_entry(decode_os_string(name)?, entry);
             }
         }
 
@@ -1064,12 +1067,13 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         name: OsString,
         entry: v0::Entry,
     ) -> Result<()> {
+        check_encoding(&name)?;
         if content.rewrite_instead_of_append() {
-            content.apply_entry((name.into_vec(), entry));
+            content.apply_entry(name, entry);
             self.rewrite(tx, content, true)?;
         } else {
             self.append_entry(tx, content, &name, &entry)?;
-            content.apply_entry((name.into_vec(), entry));
+            content.apply_entry(name, entry);
         }
 
         Ok(())
@@ -1109,7 +1113,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         let entries = content
             .files
             .iter()
-            .map(|(k, v)| (k.as_bytes().to_owned(), v))
+            .map(|(k, v)| (k.as_encoded_bytes().to_owned(), v))
             .collect::<Vec<_>>();
         content.physical_entries = entries.len() as u32;
 
@@ -1147,7 +1151,7 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
         let mut cleartext = Vec::new();
         self.encode_chunk(
             &mut cleartext,
-            &[(name.as_bytes().to_owned(), entry)],
+            &[(name.as_encoded_bytes().to_owned(), entry)],
             &mut content.prev_hmac,
         )?;
 
@@ -1273,10 +1277,8 @@ impl<S: Storage + ?Sized + 'static> Dir<S> {
 }
 
 impl DirContent {
-    fn apply_entry(&mut self, entry: v0::EntryPair) {
-        let name = OsString::from_vec(entry.0);
-
-        match entry.1 {
+    fn apply_entry(&mut self, name: OsString, entry: v0::Entry) {
+        match entry {
             v0::Entry::Deleted { .. } => {
                 self.files.remove(&name);
             }

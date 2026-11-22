@@ -20,9 +20,11 @@ use std::io::{self, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, LazyLock, Mutex, Weak};
+#[cfg(unix)]
 use std::thread;
 
 use crate::replica::WatchHandle;
+#[cfg(unix)]
 use signal_hook::{
     consts::{SIGINT, SIGTERM},
     flag,
@@ -37,6 +39,7 @@ pub fn is_interrupted() -> bool {
 }
 
 /// Install once, before entering the client's reconnect loop.
+#[cfg(unix)]
 pub fn install_signal_handler() -> io::Result<mpsc::Receiver<()>> {
     for signal in [SIGINT, SIGTERM] {
         // The conditional action must run before setting the flag. The next
@@ -46,20 +49,40 @@ pub fn install_signal_handler() -> io::Result<mpsc::Receiver<()>> {
     }
     let mut signals = Signals::new([SIGINT, SIGTERM])?;
     let (stop, interrupted) = mpsc::channel();
-    thread::Builder::new().name("interrupt".into()).spawn(move || {
-        for _ in signals.forever() {
-            let _ = stop.send(());
-            let watch = WATCH.lock().unwrap().upgrade();
-            let _ = writeln!(
-                io::stderr(),
-                "\nSync interrupted, stopping gracefully.\nPress ^C again to terminate immediately."
-            );
-            if let Some(watch) = watch {
-                watch.notify();
+    thread::Builder::new()
+        .name("interrupt".into())
+        .spawn(move || {
+            for _ in signals.forever() {
+                notify_interrupted(&stop);
             }
-        }
-    })?;
+        })?;
     Ok(interrupted)
+}
+
+#[cfg(windows)]
+pub fn install_signal_handler() -> io::Result<mpsc::Receiver<()>> {
+    let (stop, interrupted) = mpsc::channel();
+    ctrlc::set_handler(move || {
+        if INTERRUPTED.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+        notify_interrupted(&stop);
+    })
+    .map_err(io::Error::other)?;
+    Ok(interrupted)
+}
+
+fn notify_interrupted(stop: &mpsc::Sender<()>) {
+    let watch = WATCH.lock().unwrap().upgrade();
+    let _ = writeln!(
+        io::stderr(),
+        "\nSync interrupted, stopping gracefully.\nPress ^C again to terminate immediately."
+    );
+    // Log before waking the reconnect loop, which can exit immediately.
+    let _ = stop.send(());
+    if let Some(watch) = watch {
+        watch.notify();
+    }
 }
 
 pub fn notify_on_signal(watch: &Arc<WatchHandle>) {

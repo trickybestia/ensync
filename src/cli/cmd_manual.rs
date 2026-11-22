@@ -16,13 +16,10 @@
 // You should have received a copy of the GNU General Public License along with
 // Ensync. If not, see <http://www.gnu.org/licenses/>.
 
-// Lots of stuff in this module won't work on Windows as it is right now.
-
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
+use std::ffi::OsString;
 use std::fs;
 use std::io::{self, Read, Seek, Write};
-use std::os::unix::fs::*;
 use std::path::Path;
 
 use tempfile::NamedTempFile;
@@ -30,9 +27,9 @@ use tempfile::NamedTempFile;
 use crate::block_xfer;
 use crate::defs::*;
 use crate::errors::*;
-use crate::posix;
 use crate::replica::{Replica, ReplicaDirectory};
 use crate::server::{ServerReplica, Storage};
+use crate::{platform, posix};
 
 pub fn ls<S: Storage + ?Sized, IT: Iterator<Item = impl AsRef<Path>>>(
     replica: &ServerReplica<S>,
@@ -291,8 +288,27 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
             let (sub_dst, tmpdir) = if single.is_some() {
                 (dst.to_owned(), dst.parent().unwrap_or(".".as_ref()))
             } else {
+                platform::check_filename(&name)?;
                 (dst.join(&name), dst)
             };
+            if cfg!(windows) {
+                match fs::symlink_metadata(&sub_dst) {
+                    Ok(md) => {
+                        if single.is_none() {
+                            platform::check_exact_name(&sub_dst)?;
+                        }
+                        if platform::is_reparse_point(&md) {
+                            return Err(format!(
+                                "Not writing to reparse point '{}'",
+                                sub_dst.display()
+                            )
+                            .into());
+                        }
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                    Err(err) => return Err(err.into()),
+                }
+            }
 
             if verbose {
                 println!("{} => {}", sub_src.display(), sub_dst.display());
@@ -307,17 +323,15 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
                                 .to_string()
                         })?;
 
-                    fs::set_permissions(
-                        tmpfile.path(),
-                        fs::Permissions::from_mode(mode),
-                    )
-                    .chain_err(|| {
-                        format!(
-                            "Error setting new file \
+                    platform::set_mode(tmpfile.path(), mode).chain_err(
+                        || {
+                            format!(
+                                "Error setting new file \
                                                permissions on '{}'",
-                            tmpfile.path().display()
-                        )
-                    })?;
+                                tmpfile.path().display()
+                            )
+                        },
+                    )?;
 
                     let xfer = replica
                         .transfer(&dir, File(&name, &fd))
@@ -366,7 +380,7 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
                 }
 
                 FileData::Directory(mode) => {
-                    match fs::DirBuilder::new().mode(mode).create(&sub_dst) {
+                    match platform::dir_builder(mode).create(&sub_dst) {
                         Ok(_) => {}
                         Err(ref e)
                             if io::ErrorKind::AlreadyExists == e.kind()
@@ -403,7 +417,7 @@ pub fn get<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
                         .into());
                     }
 
-                    symlink(target, &sub_dst).chain_err(|| {
+                    platform::symlink(target, &sub_dst).chain_err(|| {
                         format!(
                             "Failed to create symlink '{}'",
                             sub_dst.display()
@@ -494,8 +508,15 @@ pub fn put<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
             format!("Failed to get metadata of '{}'", src.display())
         })?;
         let ft = md.file_type();
+        if platform::is_reparse_point(&md) {
+            return Err(format!(
+                "Not uploading reparse point '{}'",
+                src.display()
+            )
+            .into());
+        }
         if ft.is_dir() {
-            let new_fd = FileData::Directory(md.mode() & 0o777);
+            let new_fd = FileData::Directory(platform::file_mode(&md) & 0o777);
             if let Some(existing) = existing {
                 replica.update(dir, &name, existing, &new_fd, None)
             } else {
@@ -531,9 +552,9 @@ pub fn put<S: Storage + ?Sized, P1: AsRef<Path>, P2: AsRef<Path>>(
             }
         } else if ft.is_file() {
             let new_fd = FileData::Regular(
-                md.mode() & 0o777,
-                md.size(),
-                md.mtime(),
+                platform::file_mode(&md) & 0o777,
+                md.len(),
+                platform::mtime(&md),
                 UNKNOWN_HASH,
             );
             struct Xfer(fs::File);
@@ -749,9 +770,10 @@ fn navigate<S: Storage + ?Sized, P: AsRef<Path>>(
     path: P,
     allow_tail: bool,
 ) -> Result<(<ServerReplica<S> as Replica>::Directory, Option<OsString>)> {
-    let path = path.as_ref();
+    // Server paths are slash-delimited independently of the local OS.
+    let path = path.as_ref().as_os_str().as_encoded_bytes();
 
-    let mut dir = if path.is_absolute() {
+    let mut dir = if path.starts_with(b"/") {
         replica.pseudo_root()
     } else {
         replica
@@ -759,13 +781,12 @@ fn navigate<S: Storage + ?Sized, P: AsRef<Path>>(
             .chain_err(|| "Failed to open logical server root")?
     };
 
-    let mut it = path.iter();
+    let mut it = path
+        .split(|&b| b == b'/')
+        .filter(|part| !part.is_empty() && *part != b".");
     while let Some(component) = it.next() {
-        if component.is_empty() || OsStr::new("/") == component {
-            continue;
-        }
-
-        match replica.chdir(&dir, component) {
+        let component = platform::decode_os_string(component.to_vec())?;
+        match replica.chdir(&dir, &component) {
             Ok(subdir) => dir = subdir,
             Err(Error(ErrorKind::NotADirectory, _))
             | Err(Error(ErrorKind::NotFound, _))
@@ -779,7 +800,7 @@ fn navigate<S: Storage + ?Sized, P: AsRef<Path>>(
                     )
                     .into());
                 } else {
-                    return Ok((dir, Some(component.to_owned())));
+                    return Ok((dir, Some(component)));
                 }
             }
             Err(e) => {

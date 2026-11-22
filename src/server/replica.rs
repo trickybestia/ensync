@@ -1602,7 +1602,7 @@ mod test {
         .unwrap();
         replica1.create_root().unwrap();
 
-        let watch = Arc::new(WatchHandle::new().unwrap());
+        let watch = Arc::new(WatchHandle::default());
         watch.check_dirty();
         assert!(!watch.check_dirty());
         watch.check_context_lost();
@@ -1647,7 +1647,22 @@ mod test {
 
     #[test]
     fn directory_revert_detected() {
-        use std::process::Command;
+        fn copy_tree(
+            src: &std::path::Path,
+            dst: &std::path::Path,
+        ) -> std::io::Result<()> {
+            std::fs::create_dir(dst)?;
+            for entry in std::fs::read_dir(src)? {
+                let entry = entry?;
+                let target = dst.join(entry.file_name());
+                if entry.file_type()?.is_dir() {
+                    copy_tree(&entry.path(), &target)?;
+                } else {
+                    std::fs::copy(entry.path(), target)?;
+                }
+            }
+            Ok(())
+        }
 
         let dir = tempfile::Builder::new()
             .prefix("storage")
@@ -1684,19 +1699,7 @@ mod test {
 
             // Copy the current state of the server to another location to
             // mount the later attack.
-            // There doesn't seem to be any general-purpose "recursively copy
-            // directory" built in to Rust or as a crate. Instead of
-            // implementing one here, and since we don't work on non-UNIX right
-            // now anyway, just shell out to `cp` for the time being.
-            assert!(
-                Command::new("cp")
-                    .arg("-a")
-                    .arg(&storage_dir)
-                    .arg(&copy_dir)
-                    .status()
-                    .unwrap()
-                    .success()
-            );
+            copy_tree(&storage_dir, &copy_dir).unwrap();
 
             replica
                 .update(&mut root, &oss("sym"), &sym1, &sym2, None)

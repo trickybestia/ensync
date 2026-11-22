@@ -20,7 +20,10 @@ use std::collections::HashMap;
 use std::collections::hash_map::Entry::*;
 use std::fs;
 use std::io::{self, BufRead, Read, Seek, Write};
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+#[cfg(unix)]
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+use crate::platform;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -34,6 +37,7 @@ use crate::errors::*;
 use crate::server::storage::*;
 use crate::sql::{self, StatementEx};
 
+#[cfg(unix)]
 const NX: u32 = !0o7111;
 type WatchList = Arc<Mutex<HashMap<HashId, (HashId, u32)>>>;
 
@@ -92,7 +96,8 @@ pub struct LocalStorage {
     txns: Mutex<HashMap<Tx, TxData>>,
     // Permissions to use for new files. This is copied from the permissions on
     // the top-level directory.
-    permissions: fs::Permissions,
+    #[cfg(unix)]
+    mode: u32,
     /// If Some, directories being monitored by the asynchronous watcher mapped
     /// to their expected version and length.
     ///
@@ -142,10 +147,9 @@ impl LocalStorage {
         let objdir = path.join("objs");
         let dirdir = path.join("dirs");
 
-        fn create_dir_all(path: &Path, perm: &fs::Permissions) -> Result<()> {
-            fs::DirBuilder::new()
+        fn create_dir_all(path: &Path, mode: u32) -> Result<()> {
+            platform::dir_builder(mode)
                 .recursive(true)
-                .mode(perm.mode())
                 .create(path)
                 .chain_err(|| {
                     format!("Failed to create directory '{}'", path.display())
@@ -155,17 +159,20 @@ impl LocalStorage {
         fs::create_dir_all(&root).chain_err(|| {
             format!("Failed to create server root '{}'", root.display())
         })?;
-        let permissions = fs::metadata(&root)
-            .map(|md| md.permissions())
+        #[cfg(unix)]
+        let mode = fs::metadata(&root)
+            .map(|md| md.permissions().mode())
             .chain_err(|| "Failed to read server directory permissions")?;
+        #[cfg(windows)]
+        let mode = 0; // Files and directories inherit Windows ACLs.
 
-        create_dir_all(&tmpdir, &permissions)?;
-        create_dir_all(&objdir, &permissions)?;
-        create_dir_all(&dirdir, &permissions)?;
+        create_dir_all(&tmpdir, mode)?;
+        create_dir_all(&objdir, mode)?;
+        create_dir_all(&dirdir, mode)?;
         for i in 0..256 {
             let suffix = format!("{:02x}", i);
-            create_dir_all(&objdir.join(&suffix), &permissions)?;
-            create_dir_all(&dirdir.join(&suffix), &permissions)?;
+            create_dir_all(&objdir.join(&suffix), mode)?;
+            create_dir_all(&dirdir.join(&suffix), mode)?;
         }
 
         // SQLite doesn't respect umask. Making it do so is a C preprocessor
@@ -176,14 +183,13 @@ impl LocalStorage {
         // the database file if it does not already exist and ensure it has the
         // proper mode.
         let sqlite_path = path.join("state.sqlite");
-        fs::OpenOptions::new()
-            .append(true)
-            .create(true)
-            .mode(permissions.mode() & NX)
-            .open(&sqlite_path)
-            .chain_err(|| {
-                format!("Error creating '{}'", sqlite_path.display())
-            })?;
+        let mut options = fs::OpenOptions::new();
+        options.append(true).create(true);
+        #[cfg(unix)]
+        options.mode(mode & NX);
+        options.open(&sqlite_path).chain_err(|| {
+            format!("Error creating '{}'", sqlite_path.display())
+        })?;
         let cxn = sqlite::Connection::open_thread_safe(sqlite_path)?;
 
         cxn.execute(include_str!("storage-schema.sql"))?;
@@ -198,7 +204,8 @@ impl LocalStorage {
             dirty_dir_buf: Mutex::new(tmpfile),
             db: Arc::new(Mutex::new(cxn)),
             txns: Mutex::new(HashMap::default()),
-            permissions,
+            #[cfg(unix)]
+            mode,
             watch_list: None,
         })
     }
@@ -239,8 +246,8 @@ impl LocalStorage {
 
     fn named_temp_file(&self) -> io::Result<NamedTempFile> {
         let file = NamedTempFile::new_in(&self.tmpdir)?;
-        let perm = fs::Permissions::from_mode(self.permissions.mode() & NX);
-        fs::set_permissions(file.path(), perm)?;
+        #[cfg(unix)]
+        platform::set_mode(file.path(), self.mode & NX)?;
         Ok(file)
     }
 
@@ -521,7 +528,22 @@ impl LocalStorage {
                     .binding(1, &id[..])
                     .run()?;
 
-                let _ = fs::remove_file(self.obj_path(&id));
+                let path = self.obj_path(&id);
+                #[cfg(unix)]
+                let _ = fs::remove_file(path);
+                #[cfg(windows)]
+                {
+                    // Transactions can still hold a read handle. On Windows,
+                    // deletion can leave the name reserved until it closes.
+                    // Move out of the object namespace before deleting.
+                    let trash =
+                        NamedTempFile::new_in(&self.tmpdir)?.into_temp_path();
+                    match fs::rename(path, &trash) {
+                        Ok(()) => drop(trash),
+                        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+                        Err(err) => return Err(err.into()),
+                    }
+                }
             }
             Ok(())
         })

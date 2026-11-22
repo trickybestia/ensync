@@ -480,11 +480,8 @@ impl PassphraseConfig {
             }
 
             PassphraseConfig::Shell(ref command, ref workdir) => {
-                // If we ever support Windows this will need to be updated.
-                let mut process = process::Command::new("/bin/sh");
+                let mut process = crate::platform::shell_command(command);
                 process
-                    .arg("-c")
-                    .arg(command)
                     .stderr(process::Stdio::inherit())
                     .stdin(process::Stdio::null());
                 if let Some(ref workdir) = *workdir {
@@ -569,7 +566,7 @@ mode = "---/---"
 "#,
         )
         .unwrap();
-        assert_eq!("/the/client/path", config.client_root.to_str().unwrap());
+        assert_eq!(Path::new("/the/client/path"), config.client_root);
         assert_eq!(
             ServerConfig::Path("/the/server/path".to_owned().into()),
             config.server
@@ -596,10 +593,7 @@ mode = "---/---"
 "#,
         )
         .unwrap();
-        assert_eq!(
-            "/foo/bar/../sync/client",
-            config.client_root.to_str().unwrap()
-        );
+        assert_eq!(Path::new("/foo/bar/../sync/client"), config.client_root);
         assert_eq!(
             ServerConfig::Path("/foo/bar/../sync/server".to_owned().into()),
             config.server
@@ -677,9 +671,12 @@ mode = "---/---"
 
     #[test]
     fn passphrase_from_shell() {
-        // Another thing that won't work on Windows
-        let pconf: PassphraseConfig =
-            "shell:printf 'hunter%d\r\n' 2".parse().unwrap();
+        let command = if cfg!(windows) {
+            "shell:echo hunter2"
+        } else {
+            "shell:printf 'hunter%d\r\n' 2"
+        };
+        let pconf: PassphraseConfig = command.parse().unwrap();
         assert_eq!(b"hunter2", &pconf.read_passphrase("", false).unwrap()[..]);
     }
 

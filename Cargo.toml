@@ -22,7 +22,6 @@ fourleaf = "0.1.1"
 error-chain = "0.12.4"
 lazy_static = "1.4.0"
 filetime = "0.2"
-signal-hook = "0.3.18"
 notify = "9.0"
 num_cpus = "1.13.0"
 quick-error = "1.2.3"
@@ -46,8 +45,17 @@ default-features = false
 unsafe_code = "forbid"
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(has_error_description_deprecated)'] }
 
-[dev-dependencies]
+[target.'cfg(unix)'.dependencies]
+signal-hook = "0.3.18"
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3.5"
+winapi-util = "0.1"
+
+[target.'cfg(unix)'.dev-dependencies]
 nix = { version = "0.30", features = ["fs"] }
+
+[dev-dependencies]
 os_pipe = "1.2.3"
 proptest = "0.3.4"
 
