@@ -80,8 +80,7 @@ issue.
 Getting Started
 ---------------
 
-The first thing to do is, of course, install Ensync. The easiest way to do this
-right now is with cargo:
+To install Ensync with Cargo:
 
 ```shell
   cargo install ensync
@@ -95,6 +94,34 @@ there.
 After that, you need to set up configuration and if needed initialise the
 remote storage. This can either be done automatically with `ensync setup`, or
 by manually doing each step.
+
+### NixOS
+
+With the `nix-command` and `flakes` experimental features enabled, install
+Ensync into your user profile from this checkout:
+
+```shell
+nix profile add .#ensync
+```
+
+For a system-wide installation in a flake-based NixOS configuration, add this
+input to your configuration's `flake.nix`:
+
+```nix
+inputs.ensync.url = "github:trickybestia/ensync";
+```
+
+Then add the package in a NixOS module. For a separate module file, pass
+`inputs` from your flake outputs via `specialArgs = { inherit inputs; };` in
+`nixpkgs.lib.nixosSystem`:
+
+```nix
+environment.systemPackages = [
+  inputs.ensync.packages.${pkgs.stdenv.hostPlatform.system}.ensync
+];
+```
+
+The flake provides packages for `x86_64-linux` and `aarch64-linux`.
 
 ### Windows
 
